@@ -852,7 +852,8 @@ impl KateCraftApp {
 
         // window buttons
         let bw = 34.0;
-        let mut x = rect.right() - 3.0 * bw;
+        // Kept a little away from the corner, where the resize handle lives.
+        let mut x = rect.right() - 3.0 * bw - 8.0;
         for (i, label) in ["min", "max", "close"].iter().enumerate() {
             let br = Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(bw, rect.height()));
             let resp = ui.interact(br, Id::new(("wb", i)), Sense::click());
@@ -2592,44 +2593,125 @@ impl KateCraftApp {
         }
     }
 
-    /// The window has no system decorations, so the edges are drag handles.
+    /// The window is drawn without system decorations, so its own edge is the
+    /// resize handle. A frameless window gives no border to take hold of, so
+    /// the handle is deliberately generous: a band along every side, larger
+    /// corners, a fine outline that shows where the window ends, the pointer
+    /// changing to the matching resize arrow, and a press that starts the
+    /// resize at once instead of waiting for the pointer to travel first.
     fn resize_grips(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        let (maximized, fullscreen) = ctx.input(|i| {
+            let v = i.viewport();
+            (v.maximized.unwrap_or(false), v.fullscreen.unwrap_or(false))
+        });
         let r = ctx.viewport_rect();
-        let t = 6.0;
-        let edges: [(Rect, egui::ResizeDirection, &str); 4] = [
+
+        // The frame: one fine line, so the edge is visible before it is used.
+        ui.painter().rect_stroke(
+            r.shrink(0.5),
+            CornerRadius::ZERO,
+            Stroke::new(1.0, self.pal.border()),
+            StrokeKind::Inside,
+        );
+
+        // A maximised or full-screen window cannot be resized; there its edges
+        // belong to the page rather than to a handle.
+        if maximized || fullscreen {
+            return;
+        }
+
+        let b = 8.0; // handle width along the sides, the top and the bottom
+        let west = 6.0; // the icon rail sits against the left edge
+        let c = 14.0; // corners are wider still, so they are easy to catch
+        let pressed = ctx.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
+
+        let edges: [(Rect, egui::ResizeDirection, &'static str, egui::CursorIcon); 4] = [
             (
-                Rect::from_min_size(Pos2::new(r.left() + t, r.top()), Vec2::new((r.width() - 2.0 * t).max(0.0), t)),
+                Rect::from_min_size(
+                    Pos2::new(r.left() + c, r.top()),
+                    Vec2::new((r.width() - 2.0 * c).max(0.0), b),
+                ),
                 egui::ResizeDirection::North,
                 "rz-n",
+                egui::CursorIcon::ResizeVertical,
             ),
             (
-                Rect::from_min_size(Pos2::new(r.left() + t, r.bottom() - t), Vec2::new((r.width() - 2.0 * t).max(0.0), t)),
+                Rect::from_min_size(
+                    Pos2::new(r.left() + c, r.bottom() - b),
+                    Vec2::new((r.width() - 2.0 * c).max(0.0), b),
+                ),
                 egui::ResizeDirection::South,
                 "rz-s",
+                egui::CursorIcon::ResizeVertical,
             ),
             (
-                Rect::from_min_size(Pos2::new(r.left(), r.top() + t), Vec2::new(t, (r.height() - 2.0 * t).max(0.0))),
+                Rect::from_min_size(
+                    Pos2::new(r.left(), r.top() + c),
+                    Vec2::new(west, (r.height() - 2.0 * c).max(0.0)),
+                ),
                 egui::ResizeDirection::West,
                 "rz-w",
+                egui::CursorIcon::ResizeHorizontal,
             ),
             (
-                Rect::from_min_size(Pos2::new(r.right() - t, r.top() + t), Vec2::new(t, (r.height() - 2.0 * t).max(0.0))),
+                Rect::from_min_size(
+                    Pos2::new(r.right() - b, r.top() + c),
+                    Vec2::new(b, (r.height() - 2.0 * c).max(0.0)),
+                ),
                 egui::ResizeDirection::East,
                 "rz-e",
+                egui::CursorIcon::ResizeHorizontal,
             ),
         ];
-        let corners: [(Rect, egui::ResizeDirection, &str); 4] = [
-            (Rect::from_min_size(r.left_top(), Vec2::splat(t)), egui::ResizeDirection::NorthWest, "rz-nw"),
-            (Rect::from_min_size(Pos2::new(r.right() - t, r.top()), Vec2::splat(t)), egui::ResizeDirection::NorthEast, "rz-ne"),
-            (Rect::from_min_size(Pos2::new(r.left(), r.bottom() - t), Vec2::splat(t)), egui::ResizeDirection::SouthWest, "rz-sw"),
-            (Rect::from_min_size(Pos2::new(r.right() - t, r.bottom() - t), Vec2::splat(t)), egui::ResizeDirection::SouthEast, "rz-se"),
+        let corners: [(Rect, egui::ResizeDirection, &'static str, egui::CursorIcon); 4] = [
+            (
+                Rect::from_min_size(r.left_top(), Vec2::splat(c)),
+                egui::ResizeDirection::NorthWest,
+                "rz-nw",
+                egui::CursorIcon::ResizeNwSe,
+            ),
+            (
+                Rect::from_min_size(Pos2::new(r.right() - c, r.top()), Vec2::splat(c)),
+                egui::ResizeDirection::NorthEast,
+                "rz-ne",
+                egui::CursorIcon::ResizeNeSw,
+            ),
+            (
+                Rect::from_min_size(Pos2::new(r.left(), r.bottom() - c), Vec2::splat(c)),
+                egui::ResizeDirection::SouthWest,
+                "rz-sw",
+                egui::CursorIcon::ResizeNeSw,
+            ),
+            (
+                Rect::from_min_size(Pos2::new(r.right() - c, r.bottom() - c), Vec2::splat(c)),
+                egui::ResizeDirection::SouthEast,
+                "rz-se",
+                egui::CursorIcon::ResizeNwSe,
+            ),
         ];
-        for (rect, dir, id) in edges.into_iter().chain(corners) {
-            let resp = ui.interact(rect, Id::new(id), Sense::drag());
-            if resp.drag_started() {
+
+        let mut lit = None;
+        for (rect, dir, id, cursor) in edges.into_iter().chain(corners) {
+            let resp = ui.interact(rect, Id::new(id), Sense::click_and_drag());
+            if resp.hovered() {
+                ctx.set_cursor_icon(cursor);
+                lit = Some(rect);
+            }
+            // The press itself begins the resize: the compositor has to start
+            // it while the button is still down, and waiting for the pointer
+            // to travel first made the edge feel dead.
+            if pressed && resp.is_pointer_button_down_on() {
                 ctx.send_viewport_cmd(ViewportCommand::BeginResize(dir));
             }
+        }
+        if let Some(rect) = lit {
+            // Light the handle under the pointer, so the edge reads as one.
+            ui.painter().rect_filled(
+                rect,
+                CornerRadius::ZERO,
+                theme::ACCENT.gamma_multiply(0.30),
+            );
         }
     }
 
