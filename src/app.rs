@@ -15,6 +15,7 @@ use egui::ViewportCommand;
 use crate::doc::{Document, Lang};
 use crate::editor::{self, EditorStyle};
 use crate::prefs::{self, Prefs};
+use crate::single::Server;
 use crate::theme::{self, paint_icon, Icon, Palette};
 
 /// The application name with its version, shown in the title bar and used as
@@ -207,6 +208,8 @@ pub struct KateCraftApp {
     shot_done: Arc<AtomicBool>,
     frame: u64,
     pub quitting: bool,
+    /// The listening end for later launches, when this window owns one.
+    single: Option<Server>,
     dirty_close: Option<usize>,
     /// The settings last written to disk; the file is rewritten whenever the
     /// current choices differ from this.
@@ -226,7 +229,12 @@ const TOOL_VIEWS: [(&str, Icon); 5] = [
 ];
 
 impl KateCraftApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, files: Vec<PathBuf>, screenshot: Option<PathBuf>) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        files: Vec<PathBuf>,
+        screenshot: Option<PathBuf>,
+        single: Option<Server>,
+    ) -> Self {
         theme::install_fonts(&cc.egui_ctx);
         // Choices made in an earlier session are read back before the first
         // frame, so the window opens in the same colour scheme and font size.
@@ -316,6 +324,7 @@ impl KateCraftApp {
             shot_done: Arc::new(AtomicBool::new(false)),
             frame: 0,
             quitting: false,
+            single,
             dirty_close: None,
             prefs_saved: Prefs::default(),
             prefs_writable,
@@ -3017,6 +3026,30 @@ impl eframe::App for KateCraftApp {
         let ctx_owned = root.ctx().clone();
         let ctx = &ctx_owned;
         self.frame += 1;
+        // Files handed over by a later launch (from the file manager, or a
+        // second click) land in this window, the way Kate takes them.
+        if let Some(server) = self.single.as_mut() {
+            let (files, heard, newer_build) = server.poll();
+            for f in files {
+                self.open_path(&f);
+            }
+            if heard {
+                self.editor_focused = true;
+                ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
+                ctx.send_viewport_cmd(ViewportCommand::Focus);
+            }
+            if newer_build {
+                if self.docs.iter().any(|d| d.dirty) {
+                    let now = ctx.input(|i| i.time);
+                    self.toast("A newer KateCraft is starting — save your work first", now);
+                } else {
+                    ctx.send_viewport_cmd(ViewportCommand::Close);
+                }
+            }
+            // A window that is sitting still still has to notice a launch from
+            // another process.
+            ctx.request_repaint_after(std::time::Duration::from_millis(400));
+        }
         // Keep the window manager's title (task switcher, tooltip) in step with
         // the document name and the version shown in the in-app title bar.
         let want_title = format!("{} — {}", self.doc().title, APP_TITLE);

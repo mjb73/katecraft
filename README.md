@@ -26,6 +26,10 @@ capturing pictures of the panels).
 ## What it does
 
 - Tabs: new, open, save, save as, reload, close, switch (middle-click closes)
+- One window: opening a file while the editor is open switches that window to
+  the file (the way Kate does); a window left by an older build is replaced
+  when a newer build is launched, so the file manager always shows the current
+  editor
 - Editing: typing, undo/redo, cut/copy/paste, word and line movement,
   soft-tab indentation, auto-indent on Enter, trailing-whitespace removal,
   line sorting and case changes for a selection

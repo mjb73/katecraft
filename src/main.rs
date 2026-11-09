@@ -8,6 +8,7 @@ mod app;
 mod doc;
 mod editor;
 mod prefs;
+mod single;
 mod theme;
 
 use std::path::PathBuf;
@@ -45,6 +46,20 @@ fn main() -> eframe::Result<()> {
         i += 1;
     }
 
+    // One window per user: a file opened while the editor is already running
+    // lands in that window, and a window left over from an older build is
+    // replaced instead of being shown again. Picture mode is a private,
+    // short-lived window and never touches the running editor.
+    let mut instance = None;
+    if screenshot.is_none() {
+        single::refresh_installed_copy();
+        let outcome = single::forward(&files);
+        if matches!(outcome, single::Outcome::Forwarded) {
+            return Ok(());
+        }
+        instance = Some(single::claim(matches!(outcome, single::Outcome::Absent)));
+    }
+
     let mut viewport = eframe::egui::ViewportBuilder::default()
         .with_inner_size([1440.0, 900.0])
         .with_min_inner_size([720.0, 420.0])
@@ -70,6 +85,7 @@ fn main() -> eframe::Result<()> {
                 cc,
                 files.clone(),
                 screenshot.clone(),
+                instance,
             )))
         }),
     )
