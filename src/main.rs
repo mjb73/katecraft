@@ -7,6 +7,7 @@
 mod app;
 mod doc;
 mod editor;
+mod prefs;
 mod theme;
 
 use std::path::PathBuf;
@@ -48,7 +49,7 @@ fn main() -> eframe::Result<()> {
         .with_inner_size([1440.0, 900.0])
         .with_min_inner_size([720.0, 420.0])
         .with_decorations(false)
-        .with_title("KateCraft");
+        .with_title(app::APP_TITLE);
     // In picture mode the window keeps drawing but never steals focus.
     if screenshot.is_some() {
         viewport = viewport.with_active(false);
@@ -62,7 +63,7 @@ fn main() -> eframe::Result<()> {
     };
 
     eframe::run_native(
-        "KateCraft",
+        app::APP_TITLE,
         options,
         Box::new(move |cc| {
             Ok(Box::new(app::KateCraftApp::new(

@@ -36,17 +36,22 @@ capturing pictures of the panels).
   replace all, highlights in the text
 - Chrome: menu bar, toolbar, tab bar, path breadcrumb, sidebar (documents,
   file browser, symbols, plugin switches), status bar with line/column,
-  insert mode, tab width, encoding and syntax
+  insert mode, tab width, encoding and syntax; the title bar shows the
+  document name with the app name and version (e.g. "KateCraft 0.1.0")
 - Light and dark colour schemes, font size and tab width settings,
   About, Shortcuts and Settings windows drawn in the app's own style
+- Every choice in Settings — colour scheme, font size, tab width, line
+  numbers, minimap, and the visible chrome and sidebar — is written to
+  `~/.config/katecraft/katecraft.conf` the moment it changes and read back on
+  the next start, so the window opens the way it was left
 - File browser dialog with folder and file icons, Up/Home navigation and a
   name field; a warning before closing modified documents
 
 ## Not included
 
-No language-server support (LSP), no terminal tool view, no installable
-plugins, and the settings are not written to Kate's own configuration files —
-KateCraft keeps its own open-file list under `~/.local/share/katecraft`.
+No language-server support (LSP), no terminal tool view and no installable
+plugins. Settings live in KateCraft's own file rather than Kate's `katerc`;
+the open-file list is kept under `~/.local/share/katecraft`.
 
 ## Screenshots
 

@@ -14,7 +14,12 @@ use egui::ViewportCommand;
 
 use crate::doc::{Document, Lang};
 use crate::editor::{self, EditorStyle};
+use crate::prefs::{self, Prefs};
 use crate::theme::{self, paint_icon, Icon, Palette};
+
+/// The application name with its version, shown in the title bar and used as
+/// the native window title (e.g. "KateCraft 0.1.0").
+pub const APP_TITLE: &str = concat!("KateCraft ", env!("CARGO_PKG_VERSION"));
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SidebarPanel {
@@ -203,6 +208,13 @@ pub struct KateCraftApp {
     frame: u64,
     pub quitting: bool,
     dirty_close: Option<usize>,
+    /// The settings last written to disk; the file is rewritten whenever the
+    /// current choices differ from this.
+    prefs_saved: Prefs,
+    prefs_writable: bool,
+    /// Last title handed to the window manager, so it is only updated when the
+    /// active document or its modified state changes.
+    native_title: String,
 }
 
 const TOOL_VIEWS: [(&str, Icon); 5] = [
@@ -216,8 +228,22 @@ const TOOL_VIEWS: [(&str, Icon); 5] = [
 impl KateCraftApp {
     pub fn new(cc: &eframe::CreationContext<'_>, files: Vec<PathBuf>, screenshot: Option<PathBuf>) -> Self {
         theme::install_fonts(&cc.egui_ctx);
-        let pal = Palette::light();
+        // Choices made in an earlier session are read back before the first
+        // frame, so the window opens in the same colour scheme and font size.
+        let stored = Prefs::load();
+        let pal = Palette { dark: stored.dark };
         theme::apply_style(&cc.egui_ctx, pal);
+        let mut ed = EditorStyle::default();
+        ed.font_size = stored.font_size;
+        ed.tab_width = stored.tab_width;
+        ed.show_line_numbers = stored.line_numbers;
+        ed.show_minimap = stored.minimap;
+        let panel = match stored.panel.as_str() {
+            "files" => SidebarPanel::Filesystem,
+            "symbols" => SidebarPanel::Symbols,
+            "plugins" => SidebarPanel::Plugins,
+            _ => SidebarPanel::Documents,
+        };
 
         let mut docs = Vec::new();
         for f in files {
@@ -256,18 +282,22 @@ impl KateCraftApp {
             .and_then(|p| p.parent().map(|p| p.to_path_buf()))
             .or_else(|| std::env::current_dir().ok());
 
+        let prefs_writable = screenshot.is_none()
+            && std::env::var_os("KATECRAFT_UI").is_none()
+            && std::env::var_os("KATECRAFT_THEME").is_none();
+
         let mut app = Self {
             docs,
             active: 0,
             pal,
-            ed: EditorStyle::default(),
+            ed,
             show_menu: true,
-            show_toolbar: true,
-            show_tabbar: true,
-            show_breadcrumb: true,
-            show_status: true,
-            sidebar: false,
-            panel: SidebarPanel::Documents,
+            show_toolbar: stored.toolbar,
+            show_tabbar: stored.tabbar,
+            show_breadcrumb: stored.breadcrumb,
+            show_status: stored.status,
+            sidebar: stored.sidebar,
+            panel,
             fs_root,
             listings: HashMap::new(),
             expanded: HashSet::new(),
@@ -287,6 +317,9 @@ impl KateCraftApp {
             frame: 0,
             quitting: false,
             dirty_close: None,
+            prefs_saved: Prefs::default(),
+            prefs_writable,
+            native_title: APP_TITLE.to_string(),
         };
         if let Some(root) = app.fs_root.clone() {
             app.expanded.insert(root);
@@ -338,7 +371,56 @@ impl KateCraftApp {
             }
             _ => {}
         }
+        app.prefs_saved = app.current_prefs();
+        // First run leaves a file behind so the choices have a home.
+        if app.prefs_writable {
+            if let Some(path) = prefs::config_path() {
+                if !path.exists() {
+                    app.current_prefs().save();
+                }
+            }
+        }
         app
+    }
+
+    fn panel_id(p: SidebarPanel) -> &'static str {
+        match p {
+            SidebarPanel::Documents => "documents",
+            SidebarPanel::Filesystem => "files",
+            SidebarPanel::Symbols => "symbols",
+            SidebarPanel::Plugins => "plugins",
+        }
+    }
+
+    /// The settings as they are right now; compared with `prefs_saved`, this
+    /// decides whether the file needs rewriting.
+    fn current_prefs(&self) -> Prefs {
+        Prefs {
+            dark: self.pal.dark,
+            font_size: self.ed.font_size,
+            tab_width: self.ed.tab_width,
+            line_numbers: self.ed.show_line_numbers,
+            minimap: self.ed.show_minimap,
+            toolbar: self.show_toolbar,
+            tabbar: self.show_tabbar,
+            breadcrumb: self.show_breadcrumb,
+            status: self.show_status,
+            sidebar: self.sidebar,
+            panel: Self::panel_id(self.panel).to_string(),
+        }
+    }
+
+    /// Writes the file straight away, so a crash or a forced close cannot lose
+    /// the last choice. Picture mode never writes (checks must not disturb the
+    /// person's settings).
+    fn persist_prefs(&mut self) {
+        if !self.prefs_writable {
+            return;
+        }
+        let now = self.current_prefs();
+        if now != self.prefs_saved && now.save() {
+            self.prefs_saved = now;
+        }
     }
 
     fn doc(&self) -> &Document {
@@ -750,7 +832,7 @@ impl KateCraftApp {
             Color32::WHITE,
         );
 
-        let title = format!("{} — KateCraft", self.doc().title);
+        let title = format!("{} — {}", self.doc().title, APP_TITLE);
         p.text(
             Pos2::new(rect.center().x, rect.center().y),
             Align2::CENTER_CENTER,
@@ -2194,6 +2276,14 @@ impl KateCraftApp {
                             });
                             ui.end_row();
                         });
+                    ui.add_space(12.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "These choices are saved and used again the next time you open KateCraft.",
+                        )
+                        .size(11.5)
+                        .color(pal.text_dim()),
+                    );
                     ui.add_space(18.0);
                     button_row(ui, |ui| {
                         if dialog_button(ui, pal, "Done", true) {
@@ -2927,6 +3017,13 @@ impl eframe::App for KateCraftApp {
         let ctx_owned = root.ctx().clone();
         let ctx = &ctx_owned;
         self.frame += 1;
+        // Keep the window manager's title (task switcher, tooltip) in step with
+        // the document name and the version shown in the in-app title bar.
+        let want_title = format!("{} — {}", self.doc().title, APP_TITLE);
+        if want_title != self.native_title {
+            self.native_title = want_title.clone();
+            ctx.send_viewport_cmd(ViewportCommand::Title(want_title));
+        }
         self.screenshot_tick(ctx);
         self.shortcuts(ctx);
 
@@ -3038,6 +3135,8 @@ impl eframe::App for KateCraftApp {
             self.active = 0;
         }
         self.active = self.active.min(self.docs.len() - 1);
+
+        self.persist_prefs();
 
         if let Some((msg, t)) = &self.toast {
             let now = ctx.input(|i| i.time);
