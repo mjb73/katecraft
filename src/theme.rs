@@ -9,27 +9,27 @@ use eframe::egui::{
 
 // ---------------------------------------------------------------- colours ---
 
-pub const TITLE_BG: Color32 = Color32::from_rgb(0x29, 0x2c, 0x30);
-pub const TITLE_FG: Color32 = Color32::from_rgb(0xf0, 0xf0, 0xf0);
-pub const MENU_BG: Color32 = Color32::from_rgb(0xde, 0xe0, 0xe2);
-pub const CHROME_BG: Color32 = Color32::from_rgb(0xef, 0xf0, 0xf1);
-pub const CHROME_HOVER: Color32 = Color32::from_rgb(0xdc, 0xdd, 0xdf);
-pub const CHROME_PRESSED: Color32 = Color32::from_rgb(0xc8, 0xca, 0xcc);
-pub const BREADCRUMB_BG: Color32 = Color32::from_rgb(0xf8, 0xf7, 0xf6);
-pub const RAIL_BG: Color32 = Color32::from_rgb(0xf5, 0xf5, 0xf6);
-pub const TEXT: Color32 = Color32::from_rgb(0x23, 0x26, 0x29);
-pub const TEXT_DIM: Color32 = Color32::from_rgb(0x6a, 0x6d, 0x70);
-pub const TEXT_DISABLED: Color32 = Color32::from_rgb(0xa5, 0xa8, 0xab);
-pub const BORDER: Color32 = Color32::from_rgb(0xc9, 0xcb, 0xcd);
-pub const SEP: Color32 = Color32::from_rgb(0xd5, 0xd5, 0xd5);
+pub const TITLE_BG: Color32 = Color32::from_rgb(0x24, 0x27, 0x2b);
+pub const TITLE_FG: Color32 = Color32::from_rgb(0xed, 0xef, 0xf1);
+pub const MENU_BG: Color32 = Color32::from_rgb(0xe9, 0xeb, 0xed);
+pub const CHROME_BG: Color32 = Color32::from_rgb(0xf2, 0xf3, 0xf5);
+pub const CHROME_HOVER: Color32 = Color32::from_rgb(0xe1, 0xe4, 0xe8);
+pub const CHROME_PRESSED: Color32 = Color32::from_rgb(0xd3, 0xd7, 0xdb);
+pub const BREADCRUMB_BG: Color32 = Color32::from_rgb(0xfa, 0xfb, 0xfc);
+pub const RAIL_BG: Color32 = Color32::from_rgb(0xf6, 0xf7, 0xf9);
+pub const TEXT: Color32 = Color32::from_rgb(0x22, 0x25, 0x28);
+pub const TEXT_DIM: Color32 = Color32::from_rgb(0x67, 0x6d, 0x73);
+pub const TEXT_DISABLED: Color32 = Color32::from_rgb(0xa0, 0xa6, 0xac);
+pub const BORDER: Color32 = Color32::from_rgb(0xd2, 0xd6, 0xda);
+pub const SEP: Color32 = Color32::from_rgb(0xe2, 0xe5, 0xe8);
 pub const EDITOR_BG: Color32 = Color32::WHITE;
-pub const GUTTER_BG: Color32 = Color32::from_rgb(0xf0, 0xf0, 0xf0);
-pub const GUTTER_FG: Color32 = Color32::from_rgb(0x9d, 0x9d, 0x9d);
-pub const CUR_LINE: Color32 = Color32::from_rgb(0xf6, 0xf6, 0xf6);
-pub const SEL: Color32 = Color32::from_rgb(0xb5, 0xd9, 0xf2);
-pub const ACCENT: Color32 = Color32::from_rgb(0x3d, 0xae, 0xe9);
-pub const STATUS_BG: Color32 = Color32::from_rgb(0xf2, 0xf2, 0xf1);
-pub const MATCH_BG: Color32 = Color32::from_rgb(0xff, 0xf2, 0xa8);
+pub const GUTTER_BG: Color32 = Color32::from_rgb(0xf6, 0xf7, 0xf8);
+pub const GUTTER_FG: Color32 = Color32::from_rgb(0xa6, 0xac, 0xb2);
+pub const CUR_LINE: Color32 = Color32::from_rgb(0xf3, 0xf7, 0xfa);
+pub const SEL: Color32 = Color32::from_rgb(0xc2, 0xe1, 0xf6);
+pub const ACCENT: Color32 = Color32::from_rgb(0x2f, 0xa3, 0xe0);
+pub const STATUS_BG: Color32 = Color32::from_rgb(0xf4, 0xf5, 0xf7);
+pub const MATCH_BG: Color32 = Color32::from_rgb(0xff, 0xe9, 0x8f);
 
 // Syntax colours sampled from the original's light colour scheme.
 pub const SYN_KEYWORD: Color32 = Color32::from_rgb(0xff, 0x55, 0x00);
@@ -53,7 +53,7 @@ impl Palette {
 
     pub fn editor_bg(&self) -> Color32 {
         if self.dark {
-            Color32::from_rgb(0x23, 0x26, 0x29)
+            Color32::from_rgb(0x1b, 0x1f, 0x23)
         } else {
             EDITOR_BG
         }
@@ -61,7 +61,7 @@ impl Palette {
 
     pub fn text(&self) -> Color32 {
         if self.dark {
-            Color32::from_rgb(0xe3, 0xe5, 0xe6)
+            Color32::from_rgb(0xe4, 0xe7, 0xea)
         } else {
             Color32::from_rgb(0x1f, 0x1c, 0x1b)
         }
@@ -69,7 +69,7 @@ impl Palette {
 
     pub fn gutter_bg(&self) -> Color32 {
         if self.dark {
-            Color32::from_rgb(0x1b, 0x1e, 0x20)
+            Color32::from_rgb(0x17, 0x1b, 0x1f)
         } else {
             GUTTER_BG
         }
@@ -77,7 +77,7 @@ impl Palette {
 
     pub fn gutter_fg(&self) -> Color32 {
         if self.dark {
-            Color32::from_rgb(0x6d, 0x72, 0x76)
+            Color32::from_rgb(0x69, 0x72, 0x7a)
         } else {
             GUTTER_FG
         }
@@ -85,7 +85,7 @@ impl Palette {
 
     pub fn cur_line(&self) -> Color32 {
         if self.dark {
-            Color32::from_rgb(0x2c, 0x30, 0x34)
+            Color32::from_rgb(0x24, 0x2a, 0x30)
         } else {
             CUR_LINE
         }
@@ -93,7 +93,7 @@ impl Palette {
 
     pub fn sel(&self) -> Color32 {
         if self.dark {
-            Color32::from_rgb(0x2b, 0x5c, 0x80)
+            Color32::from_rgb(0x2c, 0x5b, 0x7e)
         } else {
             SEL
         }
@@ -149,47 +149,51 @@ impl Palette {
 
     // ---- window chrome (menus, toolbar, panels, status) ----
     pub fn title_bg(&self) -> Color32 {
-        if self.dark { Color32::from_rgb(0x1b, 0x1e, 0x20) } else { TITLE_BG }
+        if self.dark { Color32::from_rgb(0x18, 0x1b, 0x1e) } else { TITLE_BG }
     }
 
     pub fn menu_bg(&self) -> Color32 {
-        if self.dark { Color32::from_rgb(0x2a, 0x2d, 0x31) } else { MENU_BG }
+        if self.dark { Color32::from_rgb(0x26, 0x2a, 0x2e) } else { MENU_BG }
     }
 
     pub fn chrome(&self) -> Color32 {
-        if self.dark { Color32::from_rgb(0x23, 0x26, 0x29) } else { CHROME_BG }
+        if self.dark { Color32::from_rgb(0x21, 0x25, 0x29) } else { CHROME_BG }
     }
 
     pub fn chrome_hover(&self) -> Color32 {
-        if self.dark { Color32::from_rgb(0x34, 0x38, 0x3d) } else { CHROME_HOVER }
+        if self.dark { Color32::from_rgb(0x2e, 0x34, 0x3a) } else { CHROME_HOVER }
+    }
+
+    pub fn chrome_pressed(&self) -> Color32 {
+        if self.dark { Color32::from_rgb(0x38, 0x3f, 0x46) } else { CHROME_PRESSED }
     }
 
     pub fn rail_bg(&self) -> Color32 {
-        if self.dark { Color32::from_rgb(0x1f, 0x22, 0x25) } else { RAIL_BG }
+        if self.dark { Color32::from_rgb(0x1d, 0x21, 0x25) } else { RAIL_BG }
     }
 
     pub fn breadcrumb_bg(&self) -> Color32 {
-        if self.dark { Color32::from_rgb(0x26, 0x29, 0x2d) } else { BREADCRUMB_BG }
+        if self.dark { Color32::from_rgb(0x23, 0x27, 0x2b) } else { BREADCRUMB_BG }
     }
 
     pub fn status_bg(&self) -> Color32 {
-        if self.dark { Color32::from_rgb(0x1f, 0x22, 0x25) } else { STATUS_BG }
+        if self.dark { Color32::from_rgb(0x1d, 0x21, 0x25) } else { STATUS_BG }
     }
 
     pub fn border(&self) -> Color32 {
-        if self.dark { Color32::from_rgb(0x3a, 0x3e, 0x42) } else { BORDER }
+        if self.dark { Color32::from_rgb(0x35, 0x3b, 0x42) } else { BORDER }
     }
 
     pub fn sep(&self) -> Color32 {
-        if self.dark { Color32::from_rgb(0x33, 0x37, 0x3b) } else { SEP }
+        if self.dark { Color32::from_rgb(0x2b, 0x31, 0x37) } else { SEP }
     }
 
     pub fn text_dim(&self) -> Color32 {
-        if self.dark { Color32::from_rgb(0x9a, 0xa0, 0xa5) } else { TEXT_DIM }
+        if self.dark { Color32::from_rgb(0x98, 0xa1, 0xa8) } else { TEXT_DIM }
     }
 
     pub fn text_disabled(&self) -> Color32 {
-        if self.dark { Color32::from_rgb(0x64, 0x69, 0x6e) } else { TEXT_DISABLED }
+        if self.dark { Color32::from_rgb(0x62, 0x69, 0x70) } else { TEXT_DISABLED }
     }
 
     pub fn text_main(&self) -> Color32 {
@@ -198,7 +202,28 @@ impl Palette {
 
     /// Background of text fields drawn by hand on the chrome.
     pub fn field_bg(&self) -> Color32 {
-        if self.dark { Color32::from_rgb(0x2c, 0x30, 0x34) } else { Color32::WHITE }
+        if self.dark { Color32::from_rgb(0x2a, 0x2f, 0x34) } else { Color32::WHITE }
+    }
+
+    /// Soft fill used to mark the active tab, chip or tool view.
+    pub fn accent_soft(&self) -> Color32 {
+        ACCENT.gamma_multiply(if self.dark { 0.20 } else { 0.13 })
+    }
+
+    pub fn scroll_track(&self) -> Color32 {
+        if self.dark {
+            Color32::from_rgb(0x1b, 0x1f, 0x23)
+        } else {
+            Color32::from_rgb(0xf3, 0xf4, 0xf6)
+        }
+    }
+
+    pub fn scroll_thumb(&self) -> Color32 {
+        if self.dark {
+            Color32::from_rgb(0x49, 0x51, 0x59)
+        } else {
+            Color32::from_rgb(0xc2, 0xc8, 0xce)
+        }
     }
 
     pub fn number(&self) -> Color32 {
@@ -361,21 +386,40 @@ pub fn apply_style(ctx: &egui::Context, pal: Palette) {
         Color32::WHITE
     };
     v.window_stroke = Stroke::new(1.0_f32, pal.border());
-    v.menu_corner_radius = egui::CornerRadius::same(3);
-    v.window_corner_radius = egui::CornerRadius::same(4);
+    v.menu_corner_radius = egui::CornerRadius::same(6);
+    v.window_corner_radius = egui::CornerRadius::same(8);
+    v.window_shadow = egui::epaint::Shadow {
+        offset: [0, 6],
+        blur: 24,
+        spread: 0,
+        color: Color32::from_black_alpha(if pal.dark { 110 } else { 38 }),
+    };
+    v.popup_shadow = egui::epaint::Shadow {
+        offset: [0, 4],
+        blur: 16,
+        spread: 0,
+        color: Color32::from_black_alpha(if pal.dark { 120 } else { 45 }),
+    };
+    v.extreme_bg_color = pal.field_bg();
+    v.faint_bg_color = pal.cur_line();
+    v.hyperlink_color = ACCENT;
     v.selection.bg_fill = pal.sel();
-    v.selection.stroke = Stroke::new(1.0_f32, Color32::from_rgb(0x2a, 0x76, 0xa8));
+    v.selection.stroke = Stroke::new(1.0_f32, ACCENT);
     v.widgets.noninteractive.bg_fill = pal.chrome();
     v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, pal.border());
+    v.widgets.noninteractive.corner_radius = egui::CornerRadius::same(4);
     v.widgets.inactive.bg_fill = Color32::TRANSPARENT;
     v.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
     v.widgets.inactive.bg_stroke = Stroke::NONE;
+    v.widgets.inactive.corner_radius = egui::CornerRadius::same(5);
     v.widgets.hovered.bg_fill = pal.chrome_hover();
     v.widgets.hovered.weak_bg_fill = pal.chrome_hover();
     v.widgets.hovered.bg_stroke = Stroke::NONE;
-    v.widgets.active.bg_fill = pal.chrome_hover();
-    v.widgets.active.weak_bg_fill = pal.chrome_hover();
+    v.widgets.hovered.corner_radius = egui::CornerRadius::same(5);
+    v.widgets.active.bg_fill = pal.chrome_pressed();
+    v.widgets.active.weak_bg_fill = pal.chrome_pressed();
     v.widgets.active.bg_stroke = Stroke::NONE;
+    v.widgets.active.corner_radius = egui::CornerRadius::same(5);
     v.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, pal.text_main());
     v.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, pal.text_main());
     v.widgets.active.fg_stroke = Stroke::new(1.0_f32, pal.text_main());
@@ -383,8 +427,8 @@ pub fn apply_style(ctx: &egui::Context, pal: Palette) {
     style.visuals = v;
 
     style.spacing.item_spacing = Vec2::new(6.0, 4.0);
-    style.spacing.button_padding = Vec2::new(6.0, 3.0);
-    style.spacing.menu_margin = egui::Margin::same(4);
+    style.spacing.button_padding = Vec2::new(7.0, 3.0);
+    style.spacing.menu_margin = egui::Margin::same(6);
     style.spacing.scroll.bar_width = 10.0;
     style.spacing.scroll.bar_inner_margin = 2.0;
     });

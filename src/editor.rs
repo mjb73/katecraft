@@ -248,10 +248,12 @@ pub fn show(
     let mini_w = if st.show_minimap { 64.0 } else { 0.0 };
 
     let text_left = full.left() + gutter_w;
+    // A little breathing room between the gutter rule and the first character.
+    let text_pad = 8.0;
     let text_right = full.right() - mini_w;
     let text_area = Rect::from_min_max(
-        Pos2::new(text_left, full.top()),
-        Pos2::new(text_right.max(text_left + 20.0), full.bottom()),
+        Pos2::new(text_left + text_pad, full.top()),
+        Pos2::new(text_right.max(text_left + text_pad + 20.0), full.bottom()),
     );
     let visible_rows = ((text_area.height() / row_h).floor() as usize).max(1);
 
@@ -554,7 +556,7 @@ pub fn show(
 
         if line == caret_line {
             painter.rect_filled(
-                Rect::from_min_max(Pos2::new(full.left(), y), Pos2::new(text_area.right(), y + row_h)),
+                Rect::from_min_max(Pos2::new(text_left, y), Pos2::new(text_area.right(), y + row_h)),
                 CornerRadius::ZERO,
                 pal.cur_line(),
             );
@@ -592,11 +594,11 @@ pub fn show(
                     x2 = x1 + char_w * 0.6;
                 }
                 let band = Rect::from_min_max(
-                    Pos2::new(x1.max(full.left() + gutter_w), y + 1.0),
+                    Pos2::new(x1.max(text_left), y + 1.0),
                     Pos2::new(x2.min(text_area.right()), y + row_h - 1.0),
                 );
                 if band.width() > 0.5 {
-                    painter.rect_filled(band, CornerRadius::ZERO, pal.sel());
+                    painter.rect_filled(band, CornerRadius::same(2), pal.sel());
                 }
             }
         }
@@ -684,15 +686,15 @@ pub fn show(
             Pos2::new(text_area.left(), text_area.bottom() - 9.0),
             Pos2::new(text_area.right() - 2.0, text_area.bottom() - 2.0),
         );
-        painter.rect_filled(track, CornerRadius::same(3), Color32::from_gray(235));
+        painter.rect_filled(track, CornerRadius::same(4), pal.scroll_track());
         let thumb_w = (track.width() * frac).max(24.0);
         let span = (content_w - text_area.width()).max(1.0);
         let t = (doc.scroll_x / span).clamp(0.0, 1.0);
         let x = track.left() + (track.width() - thumb_w) * t;
         painter.rect_filled(
             Rect::from_min_size(Pos2::new(x, track.top()), Vec2::new(thumb_w, track.height())),
-            CornerRadius::same(3),
-            Color32::from_gray(190),
+            CornerRadius::same(4),
+            pal.scroll_thumb(),
         );
     }
 
@@ -708,7 +710,7 @@ pub fn show(
         let t = (doc.scroll_y / span).clamp(0.0, 1.0);
         let y = track.top() + (track.height() - thumb_h) * t;
         let thumb = Rect::from_min_size(Pos2::new(track.left(), y), Vec2::new(track.width(), thumb_h));
-        painter.rect_filled(thumb, CornerRadius::same(3), Color32::from_gray(196));
+        painter.rect_filled(thumb, CornerRadius::same(4), pal.scroll_thumb());
         let drag = ui.interact(thumb, ui.id().with("vscroll"), Sense::drag());
         if drag.dragged() {
             let d = ui.input(|i| i.pointer.delta().y);
@@ -720,9 +722,9 @@ pub fn show(
     if st.show_minimap {
         let mm = Rect::from_min_max(Pos2::new(text_right, full.top()), full.max);
         painter.rect_filled(mm, CornerRadius::ZERO, if pal.dark {
-            Color32::from_rgb(0x1e, 0x21, 0x24)
+            Color32::from_rgb(0x16, 0x1a, 0x1e)
         } else {
-            Color32::from_rgb(0xfa, 0xfa, 0xfa)
+            Color32::from_rgb(0xf8, 0xf9, 0xfb)
         });
         painter.line_segment(
             [Pos2::new(mm.left(), mm.top()), Pos2::new(mm.left(), mm.bottom())],
@@ -769,13 +771,13 @@ pub fn show(
             );
             painter.rect_filled(
                 view,
-                CornerRadius::same(2),
-                theme::ACCENT.gamma_multiply(0.08),
+                CornerRadius::same(3),
+                pal.accent_soft(),
             );
             painter.rect_stroke(
                 view,
-                CornerRadius::same(2),
-                Stroke::new(1.0, theme::ACCENT.gamma_multiply(0.45)),
+                CornerRadius::same(3),
+                Stroke::new(1.0, theme::ACCENT.gamma_multiply(0.50)),
                 StrokeKind::Inside,
             );
         }

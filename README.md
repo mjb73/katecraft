@@ -61,7 +61,7 @@ open straight into that view (used when capturing pictures of the panels).
   search, file browser, symbols, plugin switches), status bar with line/column,
   live word count (or "n of total words" while a selection is active),
   insert mode, tab width, encoding and syntax; the title bar shows the
-  document name with the app name and version (e.g. "KateCraft 0.1.0")
+  document name with the app name and version (e.g. "KateCraft 0.1.1")
 - A frameless window that resizes from its own edge: dragging any side or
   corner changes the size, the pointer turns into the matching resize arrow
   and the edge lights up while it is the handle, and the window keeps a fine

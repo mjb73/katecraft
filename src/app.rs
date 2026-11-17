@@ -1140,6 +1140,14 @@ impl KateCraftApp {
         let rect = ui.max_rect();
         let p = ui.painter();
         p.rect_filled(rect, CornerRadius::ZERO, self.pal.title_bg());
+        // A hairline at the bottom makes the dark title bar read as a separate layer.
+        p.line_segment(
+            [
+                Pos2::new(rect.left(), rect.bottom() - 0.5),
+                Pos2::new(rect.right(), rect.bottom() - 0.5),
+            ],
+            Stroke::new(1.0, Color32::from_black_alpha(70)),
+        );
 
         let drag = ui.interact(rect, Id::new("title-drag"), Sense::click_and_drag());
         if drag.drag_started() {
@@ -1150,17 +1158,23 @@ impl KateCraftApp {
             ctx.send_viewport_cmd(ViewportCommand::Maximized(!max));
         }
 
-        // neutral app mark
+        // app mark
         let logo = Rect::from_center_size(
-            Pos2::new(rect.left() + 20.0, rect.center().y),
-            Vec2::splat(15.0),
+            Pos2::new(rect.left() + 21.0, rect.center().y),
+            Vec2::splat(17.0),
         );
-        p.rect_filled(logo, CornerRadius::same(3), theme::ACCENT);
+        p.rect_filled(logo, CornerRadius::same(5), theme::ACCENT);
+        p.rect_stroke(
+            logo,
+            CornerRadius::same(5),
+            Stroke::new(1.0, Color32::from_white_alpha(40)),
+            StrokeKind::Inside,
+        );
         p.text(
             logo.center(),
             Align2::CENTER_CENTER,
             "K",
-            FontId::new(10.0, egui::FontFamily::Name("bold".into())),
+            FontId::new(11.0, egui::FontFamily::Name("bold".into())),
             Color32::WHITE,
         );
 
@@ -1186,7 +1200,7 @@ impl KateCraftApp {
                 } else {
                     Color32::from_rgb(0x3b, 0x3f, 0x44)
                 };
-                ui.painter().rect_filled(br.shrink(2.0), CornerRadius::same(2), col);
+                ui.painter().rect_filled(br.shrink(3.0), CornerRadius::same(4), col);
             }
             let c = if resp.hovered() && *label == "close" {
                 Color32::WHITE
@@ -1237,10 +1251,18 @@ impl KateCraftApp {
 
     fn menu_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let mut acts: Vec<Act> = Vec::new();
+        let rect = ui.max_rect();
+        ui.painter().line_segment(
+            [
+                Pos2::new(rect.left(), rect.bottom() - 0.5),
+                Pos2::new(rect.right(), rect.bottom() - 0.5),
+            ],
+            Stroke::new(1.0, self.pal.sep()),
+        );
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 12.0;
+            ui.spacing_mut().item_spacing.x = 11.0;
             ui.spacing_mut().button_padding = Vec2::new(9.0, 2.0);
-            ui.add_space(4.0);
+            ui.add_space(5.0);
             ui.menu_button("File", |ui| {
                 ui.set_min_width(230.0);
                 if ui.button("New                    Ctrl+N").clicked() {
@@ -1595,18 +1617,20 @@ impl KateCraftApp {
     fn tb_button(ui: &mut egui::Ui, pal: Palette, icon: Icon, label: &str, enabled: bool) -> Response {
         let font = FontId::new(12.5, egui::FontFamily::Proportional);
         let galley = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), pal.text_main());
-        let w = 10.0 + 16.0 + if label.is_empty() { 0.0 } else { 5.0 + galley.size().x };
-        let h = 24.0;
+        let w = 11.0 + 16.0 + if label.is_empty() { 0.0 } else { 6.0 + galley.size().x };
+        let h = 26.0;
         let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, h), if enabled { Sense::click() } else { Sense::hover() });
         let hovered = resp.hovered() && enabled;
-        if hovered {
-            ui.painter().rect_filled(rect, CornerRadius::same(3), pal.chrome_hover());
+        let pressed = enabled && resp.is_pointer_button_down_on();
+        if hovered || pressed {
+            let fill = if pressed { pal.chrome_pressed() } else { pal.chrome_hover() };
+            ui.painter().rect_filled(rect, CornerRadius::same(5), fill);
         }
         let col = if enabled { pal.text_main() } else { pal.text_disabled() };
-        paint_icon(ui.painter(), icon, Rect::from_min_size(Pos2::new(rect.left() + 4.0, rect.center().y - 8.0), Vec2::splat(16.0)), col);
+        paint_icon(ui.painter(), icon, Rect::from_min_size(Pos2::new(rect.left() + 5.0, rect.center().y - 8.0), Vec2::splat(16.0)), col);
         if !label.is_empty() {
             ui.painter().galley(
-                Pos2::new(rect.left() + 4.0 + 16.0 + 5.0, rect.center().y - galley.size().y / 2.0),
+                Pos2::new(rect.left() + 5.0 + 16.0 + 6.0, rect.center().y - galley.size().y / 2.0),
                 galley,
                 col,
             );
@@ -1618,9 +1642,17 @@ impl KateCraftApp {
         let mut acts: Vec<Act> = Vec::new();
         let can_undo = !self.doc().undo.is_empty();
         let can_redo = !self.doc().redo.is_empty();
+        let rect = ui.max_rect();
+        ui.painter().line_segment(
+            [
+                Pos2::new(rect.left(), rect.bottom() - 0.5),
+                Pos2::new(rect.right(), rect.bottom() - 0.5),
+            ],
+            Stroke::new(1.0, self.pal.sep()),
+        );
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
-            ui.add_space(2.0);
+            ui.add_space(4.0);
             if Self::tb_button(ui, self.pal, Icon::NewFile, "New", true).clicked() {
                 acts.push(Act::New);
             }
@@ -1656,7 +1688,12 @@ impl KateCraftApp {
             );
             let p = ui.painter();
             p.rect_filled(field, CornerRadius::same(11), self.pal.field_bg());
-            p.rect_stroke(field, CornerRadius::same(11), Stroke::new(1.0, self.pal.border()), StrokeKind::Inside);
+            let field_border = if !self.search_field.is_empty() && self.find.open {
+                theme::ACCENT.gamma_multiply(0.65)
+            } else {
+                self.pal.border()
+            };
+            p.rect_stroke(field, CornerRadius::same(11), Stroke::new(1.0, field_border), StrokeKind::Inside);
             paint_icon(
                 ui.painter(),
                 Icon::Search,
@@ -1708,7 +1745,7 @@ impl KateCraftApp {
         let rect = ui.max_rect();
         ui.painter().rect_filled(rect, CornerRadius::ZERO, self.pal.chrome());
         ui.painter().line_segment(
-            [Pos2::new(rect.left(), rect.bottom()), Pos2::new(rect.right(), rect.bottom())],
+            [Pos2::new(rect.left(), rect.bottom() - 0.5), Pos2::new(rect.right(), rect.bottom() - 0.5)],
             Stroke::new(1.0, self.pal.sep()),
         );
 
@@ -1719,7 +1756,7 @@ impl KateCraftApp {
             let r = Rect::from_center_size(Pos2::new(x + arrow / 2.0, rect.center().y), Vec2::new(arrow, 20.0));
             let resp = ui.interact(r, Id::new(("nav", i)), Sense::click());
             if resp.hovered() {
-                ui.painter().rect_filled(r, CornerRadius::same(2), self.pal.chrome_hover());
+                ui.painter().rect_filled(r, CornerRadius::same(4), self.pal.chrome_hover());
             }
             paint_icon(ui.painter(), *icon, r.shrink(5.0), self.pal.text_dim());
             if resp.clicked() {
@@ -1731,7 +1768,7 @@ impl KateCraftApp {
             }
             x += arrow + 2.0;
         }
-        x += 6.0;
+        x += 8.0;
 
         let mut close: Option<usize> = None;
         let mut goto: Option<usize> = None;
@@ -1747,82 +1784,100 @@ impl KateCraftApp {
                 if i == self.active { self.pal.text_main() } else { self.pal.text_dim() },
             );
             let tw = galley.size().x;
-            let w = (28.0 + tw + 24.0).max(96.0);
-            let tab = Rect::from_min_size(Pos2::new(x, rect.top() + 2.0), Vec2::new(w, rect.height() - 2.0));
+            let w = (32.0 + tw + 26.0).max(100.0);
+            // Tabs sit a little proud of the strip, so the active one reads as a card.
+            let tab = Rect::from_min_size(
+                Pos2::new(x, rect.top() + 4.0),
+                Vec2::new(w, rect.height() - 4.0),
+            );
             if tab.right() > rect.right() - 60.0 {
                 break;
             }
             let active = i == self.active;
+            // Register the tab first and the close button second: in egui the
+            // last widget wins a hit, so this keeps the small × clickable.
+            let trest = ui.interact(tab, Id::new(("tab", i)), Sense::click());
+            let crest = ui.interact(
+                Rect::from_center_size(
+                    Pos2::new(tab.right() - 13.0, tab.center().y),
+                    Vec2::splat(15.0),
+                ),
+                Id::new(("tab-close", i)),
+                Sense::click(),
+            );
             if active {
                 ui.painter().rect_filled(
                     tab,
-                    CornerRadius {
-                        nw: 3,
-                        ne: 3,
-                        sw: 0,
-                        se: 0,
-                    },
+                    CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 },
                     self.pal.editor_bg(),
                 );
+                ui.painter().rect_stroke(
+                    tab,
+                    CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 },
+                    Stroke::new(1.0, self.pal.border()),
+                    StrokeKind::Inside,
+                );
+                // The tab joins the editor below, hiding the strip's bottom rule.
+                ui.painter().line_segment(
+                    [
+                        Pos2::new(tab.left() + 1.0, tab.bottom() - 0.5),
+                        Pos2::new(tab.right() - 1.0, tab.bottom() - 0.5),
+                    ],
+                    Stroke::new(1.0, self.pal.editor_bg()),
+                );
                 ui.painter().rect_filled(
-                    Rect::from_min_size(tab.min, Vec2::new(tab.width(), 2.0)),
-                    CornerRadius::ZERO,
+                    Rect::from_min_size(
+                        Pos2::new(tab.left() + 8.0, tab.top()),
+                        Vec2::new(tab.width() - 16.0, 2.0),
+                    ),
+                    CornerRadius { nw: 1, ne: 1, sw: 0, se: 0 },
                     theme::ACCENT,
+                );
+            } else if trest.hovered() {
+                ui.painter().rect_filled(
+                    tab,
+                    CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 },
+                    self.pal.chrome_hover(),
                 );
             }
             // language badge
-            let badge = Rect::from_center_size(Pos2::new(tab.left() + 15.0, tab.center().y), Vec2::splat(13.0));
+            let badge = Rect::from_center_size(Pos2::new(tab.left() + 16.0, tab.center().y), Vec2::splat(14.0));
             if is_py {
                 paint_icon(ui.painter(), Icon::Py, badge, theme::ACCENT);
             } else {
                 paint_icon(ui.painter(), Icon::File, badge, self.pal.text_dim());
             }
             ui.painter().galley(
-                Pos2::new(tab.left() + 26.0, tab.center().y - galley.size().y / 2.0),
+                Pos2::new(tab.left() + 28.0, tab.center().y - galley.size().y / 2.0),
                 galley,
                 if active { self.pal.text_main() } else { self.pal.text_dim() },
             );
             if dirty {
                 ui.painter().circle_filled(
-                    Pos2::new(tab.left() + 26.0 + tw + 6.0, tab.center().y),
-                    2.2,
-                    self.pal.text_dim(),
+                    Pos2::new(tab.left() + 28.0 + tw + 6.0, tab.center().y),
+                    2.4,
+                    if active { theme::ACCENT } else { self.pal.text_dim() },
                 );
             }
-            let close_rect = Rect::from_center_size(
-                Pos2::new(tab.right() - 13.0, tab.center().y),
-                Vec2::splat(14.0),
-            );
-            let crest = ui.interact(close_rect, Id::new(("tab-close", i)), Sense::click());
             let ccol = if crest.hovered() {
-                ui.painter().circle_filled(close_rect.center(), 7.0, self.pal.chrome_hover());
+                ui.painter().rect_filled(crest.rect, CornerRadius::same(4), self.pal.chrome_hover());
                 self.pal.text_main()
             } else if active {
                 self.pal.text_dim()
             } else {
                 self.pal.text_disabled()
             };
-            paint_icon(ui.painter(), Icon::Close, close_rect.shrink(3.5), ccol);
+            paint_icon(ui.painter(), Icon::Close, crest.rect.shrink(4.0), ccol);
             if crest.clicked() {
                 close = Some(i);
             }
-            let trest = ui.interact(tab, Id::new(("tab", i)), Sense::click());
             if trest.clicked() {
                 goto = Some(i);
             }
             if trest.middle_clicked() {
                 close = Some(i);
             }
-            if active {
-                ui.painter().line_segment(
-                    [
-                        Pos2::new(tab.left(), tab.bottom() - 0.5),
-                        Pos2::new(tab.right(), tab.bottom() - 0.5),
-                    ],
-                    Stroke::new(1.0, self.pal.editor_bg()),
-                );
-            }
-            x = tab.right() + 1.0;
+            x = tab.right() + 2.0;
             i += 1;
         }
 
@@ -1853,6 +1908,10 @@ impl KateCraftApp {
     fn breadcrumb(&mut self, ui: &mut egui::Ui) {
         let rect = ui.max_rect();
         ui.painter().rect_filled(rect, CornerRadius::ZERO, self.pal.breadcrumb_bg());
+        ui.painter().line_segment(
+            [Pos2::new(rect.left(), rect.bottom() - 0.5), Pos2::new(rect.right(), rect.bottom() - 0.5)],
+            Stroke::new(1.0, self.pal.sep()),
+        );
         let font = FontId::new(11.5, egui::FontFamily::Proportional);
         let mut x = rect.left() + 24.0;
         let y = rect.center().y;
@@ -1871,11 +1930,13 @@ impl KateCraftApp {
 
         for (i, seg) in segments.iter().enumerate() {
             let last = i + 1 == segments.len();
-            let galley = ui.painter().layout_no_wrap(
-                seg.clone(),
-                font.clone(),
-                if last { self.pal.text_main() } else { self.pal.text_dim() },
-            );
+            let seg_font = if last {
+                FontId::new(11.5, egui::FontFamily::Name("bold".into()))
+            } else {
+                font.clone()
+            };
+            let seg_col = if last { self.pal.text_main() } else { self.pal.text_dim() };
+            let galley = ui.painter().layout_no_wrap(seg.clone(), seg_font, seg_col);
             let w = galley.size().x;
             if x + w > rect.right() - 120.0 {
                 break;
@@ -1889,7 +1950,7 @@ impl KateCraftApp {
                 }
                 x += 15.0;
             }
-            ui.painter().galley(Pos2::new(x, y - galley.size().y / 2.0), galley, self.pal.text_dim());
+            ui.painter().galley(Pos2::new(x, y - galley.size().y / 2.0), galley, seg_col);
             x += w + 6.0;
             if !last {
                 ui.painter().text(
@@ -1924,9 +1985,17 @@ impl KateCraftApp {
             let resp = ui.interact(r, Id::new(("rail", r.top() as i32)), Sense::click());
             let sel = self.sidebar && self.panel == panel;
             if sel {
-                ui.painter().rect_filled(r, CornerRadius::same(3), theme::ACCENT.gamma_multiply(0.18));
+                ui.painter().rect_filled(r, CornerRadius::same(5), self.pal.accent_soft());
+                ui.painter().rect_filled(
+                    Rect::from_min_size(
+                        Pos2::new(r.left(), r.top() + 5.0),
+                        Vec2::new(3.0, r.height() - 10.0),
+                    ),
+                    CornerRadius::same(2),
+                    theme::ACCENT,
+                );
             } else if resp.hovered() {
-                ui.painter().rect_filled(r, CornerRadius::same(3), self.pal.chrome_hover());
+                ui.painter().rect_filled(r, CornerRadius::same(5), self.pal.chrome_hover());
             }
             paint_icon(
                 ui.painter(),
@@ -1965,10 +2034,14 @@ impl KateCraftApp {
             FontId::new(12.0, egui::FontFamily::Name("bold".into())),
             self.pal.text_main(),
         );
+        ui.painter().line_segment(
+            [Pos2::new(header.left(), header.bottom() - 0.5), Pos2::new(header.right(), header.bottom() - 0.5)],
+            Stroke::new(1.0, self.pal.sep()),
+        );
         let closer = Rect::from_center_size(Pos2::new(header.right() - 14.0, header.center().y), Vec2::splat(16.0));
         let cresp = ui.interact(closer, Id::new("sidebar-close"), Sense::click());
         if cresp.hovered() {
-            ui.painter().rect_filled(closer, CornerRadius::same(2), self.pal.chrome_hover());
+            ui.painter().rect_filled(closer, CornerRadius::same(4), self.pal.chrome_hover());
         }
         paint_icon(ui.painter(), Icon::Close, closer.shrink(4.0), self.pal.text_dim());
         if cresp.clicked() {
@@ -2452,9 +2525,9 @@ impl KateCraftApp {
             let resp = ui.interact(r, Id::new(("status", i)), Sense::click());
             let active = self.tool_view == Some(i);
             if active {
-                ui.painter().rect_filled(r, CornerRadius::same(2), theme::ACCENT.gamma_multiply(0.16));
+                ui.painter().rect_filled(r, CornerRadius::same(4), self.pal.accent_soft());
             } else if resp.hovered() {
-                ui.painter().rect_filled(r, CornerRadius::same(2), self.pal.chrome_hover());
+                ui.painter().rect_filled(r, CornerRadius::same(4), self.pal.chrome_hover());
             }
             let col = if active { theme::ACCENT } else { self.pal.text_dim() };
             paint_icon(
@@ -2517,14 +2590,31 @@ impl KateCraftApp {
         for i in (0..tokens.len()).rev() {
             let w = widths[i];
             rx -= w;
+            let color = if i == tokens.len() - 1 {
+                theme::ACCENT
+            } else if i == 0 {
+                self.pal.text_main()
+            } else {
+                self.pal.text_dim()
+            };
             ui.painter().text(
                 Pos2::new(rx, rect.center().y),
                 Align2::LEFT_CENTER,
                 &tokens[i],
                 font.clone(),
-                self.pal.text_dim(),
+                color,
             );
-            rx -= 22.0;
+            rx -= 10.0;
+            if i > 0 {
+                ui.painter().line_segment(
+                    [
+                        Pos2::new(rx, rect.center().y - 6.0),
+                        Pos2::new(rx, rect.center().y + 6.0),
+                    ],
+                    Stroke::new(1.0, self.pal.sep()),
+                );
+                rx -= 10.0;
+            }
         }
 
         // clickable encoding / syntax chips
@@ -2555,8 +2645,14 @@ impl KateCraftApp {
         let pal = self.pal;
         let mut draw_field = move |ui: &mut egui::Ui, y: f32, value: &mut String, hint: &str, id: &str| {
             let r = Rect::from_min_size(Pos2::new(rect.left() + 36.0, y), Vec2::new(300.0, row_h - 6.0));
-            ui.painter().rect_filled(r, CornerRadius::same(3), pal.field_bg());
-            ui.painter().rect_stroke(r, CornerRadius::same(3), Stroke::new(1.0_f32, pal.border()), StrokeKind::Inside);
+            let focused = ui.memory(|m| m.has_focus(Id::new(id)));
+            let border = if focused {
+                theme::ACCENT
+            } else {
+                pal.border()
+            };
+            ui.painter().rect_filled(r, CornerRadius::same(5), pal.field_bg());
+            ui.painter().rect_stroke(r, CornerRadius::same(5), Stroke::new(1.0_f32, border), StrokeKind::Inside);
             ui.put(
                 r.shrink2(Vec2::new(6.0, 2.0)),
                 egui::TextEdit::singleline(value)
@@ -3843,20 +3939,20 @@ fn paint_mark(p: &egui::Painter, rect: Rect, large: bool) {
 
 fn dialog_frame(pal: Palette) -> egui::Frame {
     let bg = if pal.dark {
-        Color32::from_rgb(0x2c, 0x30, 0x34)
+        Color32::from_rgb(0x28, 0x2d, 0x32)
     } else {
         Color32::WHITE
     };
     egui::Frame::NONE
         .fill(bg)
         .stroke(Stroke::new(1.0, pal.border()))
-        .corner_radius(CornerRadius::same(6))
+        .corner_radius(CornerRadius::same(9))
         .inner_margin(Margin::ZERO)
         .shadow(egui::epaint::Shadow {
-            offset: [0, 8],
-            blur: 24,
+            offset: [0, 10],
+            blur: 32,
             spread: 0,
-            color: Color32::from_black_alpha(56),
+            color: Color32::from_black_alpha(if pal.dark { 120 } else { 48 }),
         })
 }
 

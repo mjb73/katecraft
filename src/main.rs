@@ -35,7 +35,7 @@ fn main() -> eframe::Result<()> {
                 return Ok(());
             }
             "--version" | "-v" => {
-                println!("katecraft 0.1.0");
+                println!("katecraft 0.1.1");
                 return Ok(());
             }
             other if other.starts_with("--screenshot=") => {

@@ -1,6 +1,6 @@
 [package]
 name = "katecraft"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "KateCraft — a text and code editor (Rust + egui)"
 
