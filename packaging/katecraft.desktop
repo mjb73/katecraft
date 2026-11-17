@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=KateCraft
+GenericName=Text Editor
+Comment=Text and code editor with tabs, syntax colouring and find/replace
+Exec=/home/mjbayes/.local/bin/katecraft %F
+TryExec=/home/mjbayes/.local/bin/katecraft
+Icon=katecraft
+Terminal=false
+Categories=TextEditor;Development;IDE;
+Keywords=text;editor;code;plain;notepad;write;source;
+StartupNotify=false
+StartupWMClass=KateCraft
+MimeType=text/plain;text/x-chdr;text/x-csrc;text/x-c++hdr;text/x-c++src;text/x-csharp;text/x-java;text/x-dsrc;text/x-pascal;text/x-perl;text/x-python;text/x-ruby;text/x-rust;text/rust;text/x-go;text/x-scala;text/x-lua;text/x-tcl;text/x-shellscript;application/x-shellscript;text/x-makefile;text/x-cmake;text/x-sql;text/x-diff;text/x-patch;text/x-log;text/x-ini;text/markdown;text/x-markdown;application/json;application/x-yaml;text/yaml;text/x-toml;application/toml;text/css;application/x-php;application/x-httpd-php;text/x-tex;text/x-latex;text/x-asm;text/csv;

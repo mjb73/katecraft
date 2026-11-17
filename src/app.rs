@@ -25,6 +25,7 @@ pub const APP_TITLE: &str = concat!("KateCraft ", env!("CARGO_PKG_VERSION"));
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SidebarPanel {
     Documents,
+    Search,
     Filesystem,
     Symbols,
     Plugins,
@@ -70,6 +71,8 @@ pub enum Act {
     TabWidth(usize),
     Lang(Lang),
     About,
+    /// Added feature: the manual update check.
+    CheckUpdates,
     Shortcuts,
     Settings,
     OpenFolder,
@@ -83,6 +86,14 @@ pub enum Act {
     ReplaceAll,
     CloseFind,
     NewFolderToggle,
+    FindInFiles,
+    OpenHit(usize),
+    ToggleBookmark,
+    NextBookmark,
+    PrevBookmark,
+    ClearBookmarks,
+    OpenRecent(usize),
+    ClearRecent,
 }
 
 struct Find {
@@ -113,6 +124,53 @@ impl Default for Find {
     }
 }
 
+/// One matching line found by the folder-wide search.
+#[derive(Clone)]
+struct FileHit {
+    path: PathBuf,
+    line: usize,
+    col: usize,
+    text: String,
+}
+
+struct FileSearch {
+    query: String,
+    case: bool,
+    hits: Vec<FileHit>,
+    /// Total occurrences, which can be more than the number of listed lines.
+    total: usize,
+    files: usize,
+    scanned: usize,
+    truncated: bool,
+    ran: bool,
+    focus: bool,
+    scope: Option<PathBuf>,
+    /// A search runs off the UI thread; its receiver lands its result here.
+    pending: bool,
+    rx: Option<std::sync::mpsc::Receiver<TreeHits>>,
+    for_query: String,
+}
+
+impl Default for FileSearch {
+    fn default() -> Self {
+        Self {
+            query: String::new(),
+            case: false,
+            hits: Vec::new(),
+            total: 0,
+            files: 0,
+            scanned: 0,
+            truncated: false,
+            ran: false,
+            focus: false,
+            scope: None,
+            pending: false,
+            rx: None,
+            for_query: String::new(),
+        }
+    }
+}
+
 enum Dialog {
     About,
     Shortcuts,
@@ -121,12 +179,17 @@ enum Dialog {
     Message(String, String),
     GoToLine(String),
     Confirm(&'static str, String, Act2),
+    /// Added feature: *Check for updates…* — the offer, the wait, and the failure.
+    Update,
 }
 
 #[derive(Clone, Copy)]
 enum Act2 {
     CloseDoc(usize),
     Quit,
+    /// Added feature: start the build the update installed (its path is in
+    /// `KateCraftApp::restart_exe`).
+    Restart,
 }
 
 struct Browser {
@@ -194,6 +257,14 @@ pub struct KateCraftApp {
     listings: HashMap<PathBuf, Vec<PathBuf>>,
     expanded: HashSet<PathBuf>,
     find: Find,
+    fsearch: FileSearch,
+    recent: Vec<PathBuf>,
+    /// Whether the documents from the last session are opened at start.
+    reopen: bool,
+    /// Open document paths as last written to the session file.
+    session_saved: Vec<PathBuf>,
+    /// Cached word and character counts, recomputed only when the text changes.
+    count_cache: (usize, u64, usize, usize),
     dialog: Option<Dialog>,
     tool_view: Option<usize>,
     editor_focused: bool,
@@ -218,6 +289,11 @@ pub struct KateCraftApp {
     /// Last title handed to the window manager, so it is only updated when the
     /// active document or its modified state changes.
     native_title: String,
+    /// Added feature: *Check for updates…* — whether a check or an install is running,
+    /// the release on offer, and the worker thread's reply channel.
+    update: crate::update::Update,
+    /// The path the update installed over, carried until the window restarts on it.
+    restart_exe: Option<PathBuf>,
 }
 
 const TOOL_VIEWS: [(&str, Icon); 5] = [
@@ -247,12 +323,14 @@ impl KateCraftApp {
         ed.show_line_numbers = stored.line_numbers;
         ed.show_minimap = stored.minimap;
         let panel = match stored.panel.as_str() {
+            "search" => SidebarPanel::Search,
             "files" => SidebarPanel::Filesystem,
             "symbols" => SidebarPanel::Symbols,
             "plugins" => SidebarPanel::Plugins,
             _ => SidebarPanel::Documents,
         };
 
+        let from_cli = !files.is_empty();
         let mut docs = Vec::new();
         for f in files {
             match Document::open(&f) {
@@ -268,6 +346,22 @@ impl KateCraftApp {
                     docs.push(d);
                 }
             }
+        }
+        // Where the last session left off: its documents come back as tabs,
+        // unless files were named on the command line. Missing files are
+        // quietly skipped.
+        let restore_asked = std::env::var("KATECRAFT_UI").as_deref() == Ok("session");
+        let mut restore_active: Option<PathBuf> = None;
+        if docs.is_empty() && stored.reopen && (screenshot.is_none() || restore_asked) {
+            let (paths, active) = load_session();
+            for path in paths.into_iter().take(12) {
+                if path.is_file() {
+                    if let Ok(d) = Document::open(&path) {
+                        docs.push(d);
+                    }
+                }
+            }
+            restore_active = active;
         }
         if docs.is_empty() {
             let sample = Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/welcome.py");
@@ -310,6 +404,11 @@ impl KateCraftApp {
             listings: HashMap::new(),
             expanded: HashSet::new(),
             find: Find::default(),
+            fsearch: FileSearch::default(),
+            recent: load_recent(),
+            reopen: stored.reopen,
+            session_saved: Vec::new(),
+            count_cache: (usize::MAX, u64::MAX, 0, 0),
             dialog: None,
             tool_view: None,
             editor_focused: true,
@@ -329,9 +428,25 @@ impl KateCraftApp {
             prefs_saved: Prefs::default(),
             prefs_writable,
             native_title: APP_TITLE.to_string(),
+            update: crate::update::Update::default(),
+            restart_exe: None,
         };
         if let Some(root) = app.fs_root.clone() {
             app.expanded.insert(root);
+        }
+        // Opening several files at once leaves the last one in front, the way
+        // Kate does.
+        if from_cli {
+            app.active = app.docs.len().saturating_sub(1);
+        }
+        if let Some(want) = restore_active {
+            if let Some(i) = app
+                .docs
+                .iter()
+                .position(|d| d.path.as_deref() == Some(want.as_path()))
+            {
+                app.active = i;
+            }
         }
         if let Some(d) = app.docs.get_mut(0) {
             let dir = d.path.as_ref().and_then(|p| p.parent()).map(|p| p.to_path_buf());
@@ -363,6 +478,37 @@ impl KateCraftApp {
                 app.sidebar = true;
                 app.panel = SidebarPanel::Documents;
             }
+            Ok("bookmarks") => {
+                if let Some(d) = app.docs.get_mut(0) {
+                    for line in [7usize, 13, 29] {
+                        let at = d.line_start(line.min(d.line_count() - 1));
+                        if !d.bookmarks.contains(&at) {
+                            d.bookmarks.push(at);
+                        }
+                    }
+                    d.bookmarks.sort_unstable();
+                    d.cursor = d.line_start(13);
+                    d.anchor = d.cursor;
+                    d.scroll_y = 4.0;
+                }
+            }
+            Ok("search") => {
+                app.sidebar = true;
+                app.panel = SidebarPanel::Search;
+                app.fsearch.query = "panel".to_string();
+                app.run_file_search(0.0);
+                std::thread::sleep(std::time::Duration::from_millis(80));
+                app.poll_search(0.0);
+            }
+            Ok("searchhit") => {
+                app.sidebar = true;
+                app.panel = SidebarPanel::Search;
+                app.fsearch.query = "panel".to_string();
+                app.run_file_search(0.0);
+                std::thread::sleep(std::time::Duration::from_millis(80));
+                app.poll_search(0.0);
+                app.apply(Act::OpenHit(0), &cc.egui_ctx);
+            }
             Ok("files") => {
                 app.sidebar = true;
                 app.panel = SidebarPanel::Filesystem;
@@ -380,6 +526,13 @@ impl KateCraftApp {
             }
             _ => {}
         }
+        // Files handed in on the command line belong in Open Recent.
+        if from_cli && screenshot.is_none() {
+            let opened: Vec<PathBuf> = app.docs.iter().filter_map(|d| d.path.clone()).collect();
+            for p in opened {
+                app.note_recent(&p);
+            }
+        }
         app.prefs_saved = app.current_prefs();
         // First run leaves a file behind so the choices have a home.
         if app.prefs_writable {
@@ -395,6 +548,7 @@ impl KateCraftApp {
     fn panel_id(p: SidebarPanel) -> &'static str {
         match p {
             SidebarPanel::Documents => "documents",
+            SidebarPanel::Search => "search",
             SidebarPanel::Filesystem => "files",
             SidebarPanel::Symbols => "symbols",
             SidebarPanel::Plugins => "plugins",
@@ -416,6 +570,7 @@ impl KateCraftApp {
             status: self.show_status,
             sidebar: self.sidebar,
             panel: Self::panel_id(self.panel).to_string(),
+            reopen: self.reopen,
         }
     }
 
@@ -545,23 +700,22 @@ impl KateCraftApp {
                 self.doc_mut().redo();
             }
             Act::Copy => {
-                let s = self.doc().selected_text();
+                let s = self.doc().copy_text();
                 if !s.is_empty() {
                     ctx.copy_text(s);
                 }
             }
             Act::Cut => {
-                let s = self.doc().selected_text();
+                let s = self.doc_mut().cut();
                 if !s.is_empty() {
                     ctx.copy_text(s);
-                    if let Some((a, b)) = self.doc().selection() {
-                        self.doc_mut().delete_range(a, b);
-                    }
                 }
             }
             Act::Paste => {
-                if let Ok(t) = arboard_read() {
-                    self.doc_mut().insert(&t);
+                if let Some(t) = read_clipboard_text() {
+                    if !t.is_empty() {
+                        self.doc_mut().insert(&t);
+                    }
                 }
             }
             Act::SelectAll => self.doc_mut().select_all(),
@@ -659,6 +813,10 @@ impl KateCraftApp {
                 d.version += 1;
             }
             Act::About => self.dialog = Some(Dialog::About),
+            Act::CheckUpdates => {
+                self.update.start_check();
+                self.dialog = Some(Dialog::Update);
+            }
             Act::Shortcuts => self.dialog = Some(Dialog::Shortcuts),
             Act::Settings => self.dialog = Some(Dialog::Settings),
             Act::OpenFolder => {
@@ -676,41 +834,33 @@ impl KateCraftApp {
                     .iter()
                     .filter_map(|d| d.path.clone())
                     .collect();
-                if let Some(file) = session_path() {
-                    if let Some(dir) = file.parent() {
-                        let _ = std::fs::create_dir_all(dir);
-                    }
-                    let body = paths
-                        .iter()
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    let _ = std::fs::write(&file, body);
-                }
+                save_session(&paths, self.doc().path.as_deref());
                 self.session = Some(paths);
                 self.toast("Session saved", now);
             }
             Act::RestoreSession => {
-                if self.session.is_none() {
-                    if let Some(body) = session_path().and_then(|p| std::fs::read_to_string(p).ok()) {
-                        self.session = Some(
-                            body.lines()
-                                .filter(|l| !l.trim().is_empty())
-                                .map(PathBuf::from)
-                                .collect(),
-                        );
-                    }
-                }
-                if let Some(paths) = self.session.clone() {
+                let (paths, active) = load_session();
+                if paths.is_empty() {
+                    self.toast("No saved session yet", now);
+                } else {
+                    let before = self.docs.len();
                     for p in paths {
                         if let Ok(d) = Document::open(&p) {
                             self.docs.push(d);
                         }
                     }
                     self.active = self.docs.len().saturating_sub(1);
+                    if let Some(want) = active {
+                        if let Some(i) = self
+                            .docs
+                            .iter()
+                            .skip(before)
+                            .position(|d| d.path.as_deref() == Some(want.as_path()))
+                        {
+                            self.active = before + i;
+                        }
+                    }
                     self.toast("Session restored", now);
-                } else {
-                    self.toast("No saved session yet", now);
                 }
             }
             Act::ToolView(i) => {
@@ -721,6 +871,59 @@ impl KateCraftApp {
                 }
             }
             Act::NewFolderToggle => {}
+            Act::FindInFiles => {
+                self.sidebar = true;
+                self.panel = SidebarPanel::Search;
+                if self.fsearch.query.trim().is_empty() {
+                    let sel = self.doc().selected_text();
+                    let cand = if !sel.is_empty() && !sel.contains('\n') && sel.chars().count() <= 60 {
+                        sel
+                    } else {
+                        self.find.query.clone()
+                    };
+                    if !cand.trim().is_empty() {
+                        self.fsearch.query = cand;
+                    }
+                }
+                self.fsearch.focus = true;
+                if !self.fsearch.query.trim().is_empty() {
+                    self.run_file_search(now);
+                }
+            }
+            Act::OpenHit(i) => {
+                if let Some(h) = self.fsearch.hits.get(i).cloned() {
+                    let n = self.fsearch.query.chars().count();
+                    self.open_at(&h.path, h.line, h.col, n);
+                }
+            }
+            Act::ToggleBookmark => {
+                let added = self.doc_mut().toggle_bookmark();
+                self.toast(if added { "Bookmark added" } else { "Bookmark removed" }, now);
+            }
+            Act::NextBookmark => {
+                if !self.doc_mut().goto_bookmark(1) {
+                    self.toast("No bookmarks in this document", now);
+                }
+            }
+            Act::PrevBookmark => {
+                if !self.doc_mut().goto_bookmark(-1) {
+                    self.toast("No bookmarks in this document", now);
+                }
+            }
+            Act::ClearBookmarks => {
+                self.doc_mut().bookmarks.clear();
+                self.toast("Bookmarks cleared", now);
+            }
+            Act::OpenRecent(i) => {
+                if let Some(p) = self.recent.get(i).cloned() {
+                    self.open_path(&p);
+                }
+            }
+            Act::ClearRecent => {
+                self.recent.clear();
+                save_recent(&self.recent);
+                self.toast("Recent files cleared", now);
+            }
         }
     }
 
@@ -793,6 +996,7 @@ impl KateCraftApp {
                 self.docs.push(d);
                 self.active = self.docs.len() - 1;
                 self.log(format!("Opened {}", path.display()));
+                self.note_recent(path);
             }
             Err(e) => {
                 self.dialog = Some(Dialog::Message("Could not open".into(), e.to_string()));
@@ -806,8 +1010,127 @@ impl KateCraftApp {
             Ok(_) => {
                 self.log(format!("Saved {}", path.display()));
                 self.toast(format!("Saved {}", path.display()), now);
+                self.note_recent(&path);
             }
             Err(e) => self.dialog = Some(Dialog::Message("Could not save".into(), e.to_string())),
+        }
+    }
+
+    /// Start the folder-wide search on a worker thread so a large folder
+    /// never freezes the window; `poll_search` collects the result.
+    fn run_file_search(&mut self, _now: f64) {
+        let query = self.fsearch.query.trim().to_string();
+        self.fsearch.hits.clear();
+        self.fsearch.total = 0;
+        self.fsearch.files = 0;
+        self.fsearch.scanned = 0;
+        self.fsearch.truncated = false;
+        self.fsearch.scope = None;
+        self.fsearch.rx = None;
+        self.fsearch.pending = false;
+        if query.is_empty() {
+            self.fsearch.ran = false;
+            return;
+        }
+        // Search around the document being edited; when it has never been
+        // saved, fall back to the folder open in the sidebar, then the
+        // process's own folder.
+        let root = self
+            .doc()
+            .path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf())
+            .or_else(|| self.fs_root.clone())
+            .or_else(|| std::env::current_dir().ok());
+        let Some(root) = root else {
+            self.fsearch.ran = true;
+            return;
+        };
+        self.fsearch.scope = Some(root.clone());
+        self.fsearch.for_query = query.clone();
+        self.fsearch.ran = true;
+        self.fsearch.pending = true;
+        let case = self.fsearch.case;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let res = search_tree(&root, &query, case);
+            let _ = tx.send(res);
+        });
+        self.fsearch.rx = Some(rx);
+    }
+
+    /// Pick up a finished background search, if there is one.
+    fn poll_search(&mut self, now: f64) {
+        let Some(rx) = self.fsearch.rx.take() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(res) => {
+                self.fsearch.hits = res.hits;
+                self.fsearch.total = res.total;
+                self.fsearch.files = res.files;
+                self.fsearch.scanned = res.scanned;
+                self.fsearch.truncated = res.truncated;
+                self.fsearch.pending = false;
+                let msg = if self.fsearch.total == 0 {
+                    format!("No matches for \"{}\"", self.fsearch.for_query)
+                } else if self.fsearch.files == 1 {
+                    format!("{} matches in 1 file", self.fsearch.total)
+                } else {
+                    format!("{} matches in {} files", self.fsearch.total, self.fsearch.files)
+                };
+                self.toast(msg, now);
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                self.fsearch.rx = Some(rx);
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.fsearch.pending = false;
+            }
+        }
+    }
+
+    /// Open a file and put the caret on a match, selecting it.
+    fn open_at(&mut self, path: &Path, line: usize, col: usize, len_chars: usize) {
+        self.open_path(path);
+        let Some(d) = self.docs.get_mut(self.active) else {
+            return;
+        };
+        if d.path.as_deref() != Some(path) {
+            return;
+        }
+        let line = line.min(d.line_count().saturating_sub(1));
+        let (ls, le) = d.line_range(line);
+        let text = &d.text[ls..le];
+        let mut byte = text.len();
+        for (ci, (bi, _)) in text.char_indices().enumerate() {
+            if ci == col {
+                byte = bi;
+                break;
+            }
+        }
+        let len: usize = text[byte..]
+            .chars()
+            .take(len_chars)
+            .map(|c| c.len_utf8())
+            .sum();
+        let a = ls + byte;
+        d.anchor = a;
+        d.cursor = (a + len).min(le);
+        d.scroll_y = (line as f32 - 6.0).max(0.0);
+        d.wanted_col = None;
+        self.editor_focused = true;
+    }
+
+    /// Keep the recently opened files list, newest first, on disk.
+    fn note_recent(&mut self, path: &Path) {
+        let p = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        self.recent.retain(|r| r != &p);
+        self.recent.insert(0, p);
+        self.recent.truncate(10);
+        if self.screenshot.is_none() {
+            save_recent(&self.recent);
         }
     }
 
@@ -928,6 +1251,34 @@ impl KateCraftApp {
                     acts.push(Act::Open);
                     ui.close();
                 }
+                ui.menu_button("Open Recent", |ui| {
+                    ui.set_min_width(260.0);
+                    if self.recent.is_empty() {
+                        ui.label("No recent files");
+                    }
+                    for (i, p) in self.recent.iter().take(10).enumerate() {
+                        let name = p
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("?")
+                            .to_string();
+                        let dir = p.parent().map(|d| d.display().to_string()).unwrap_or_default();
+                        let shown = if dir.chars().count() > 30 {
+                            format!("…{}", dir.chars().skip(dir.chars().count() - 30).collect::<String>())
+                        } else {
+                            dir
+                        };
+                        if ui.button(format!("{name}    {shown}")).clicked() {
+                            acts.push(Act::OpenRecent(i));
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    if ui.button("Clear Recent Files").clicked() {
+                        acts.push(Act::ClearRecent);
+                        ui.close();
+                    }
+                });
                 ui.separator();
                 if ui.button("Save                   Ctrl+S").clicked() {
                     acts.push(Act::Save);
@@ -987,6 +1338,27 @@ impl KateCraftApp {
                     acts.push(Act::GoToLine);
                     ui.close();
                 }
+                ui.separator();
+                ui.menu_button("Bookmarks", |ui| {
+                    ui.set_min_width(230.0);
+                    if ui.button("Toggle Bookmark     Ctrl+B").clicked() {
+                        acts.push(Act::ToggleBookmark);
+                        ui.close();
+                    }
+                    if ui.button("Next Bookmark           F2").clicked() {
+                        acts.push(Act::NextBookmark);
+                        ui.close();
+                    }
+                    if ui.button("Previous Bookmark  Shift+F2").clicked() {
+                        acts.push(Act::PrevBookmark);
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button("Clear Bookmarks").clicked() {
+                        acts.push(Act::ClearBookmarks);
+                        ui.close();
+                    }
+                });
             });
             ui.menu_button("Selection", |ui| {
                 ui.set_min_width(220.0);
@@ -1111,9 +1483,16 @@ impl KateCraftApp {
                     acts.push(Act::RestoreSession);
                     ui.close();
                 }
+                ui.separator();
+                ui.checkbox(&mut self.reopen, "Reopen at start");
             });
             ui.menu_button("Tools", |ui| {
                 ui.set_min_width(230.0);
+                if ui.button("Find in Files…  Ctrl+Shift+F").clicked() {
+                    acts.push(Act::FindInFiles);
+                    ui.close();
+                }
+                ui.separator();
                 if ui.button("Find…").clicked() {
                     acts.push(Act::Find);
                     ui.close();
@@ -1182,6 +1561,24 @@ impl KateCraftApp {
                 ui.set_min_width(200.0);
                 if ui.button("Keyboard Shortcuts").clicked() {
                     acts.push(Act::Shortcuts);
+                    ui.close();
+                }
+                ui.separator();
+                // Added feature: the manual update check. Nothing looks for a release on
+                // its own — this row is the only place that starts it — and while a check
+                // or an install is running it says so and does nothing.
+                if self.update.busy() {
+                    let words = if self.update.installing {
+                        "Installing update…"
+                    } else {
+                        "Checking for updates…"
+                    };
+                    ui.add_enabled(false, egui::Button::new(words));
+                } else if ui
+                    .button(format!("Check for updates…   {}", crate::update::VERSION))
+                    .clicked()
+                {
+                    acts.push(Act::CheckUpdates);
                     ui.close();
                 }
                 if ui.button("About KateCraft").clicked() {
@@ -1516,6 +1913,7 @@ impl KateCraftApp {
         );
         let items = [
             (Icon::Doc, SidebarPanel::Documents),
+            (Icon::Search, SidebarPanel::Search),
             (Icon::List, SidebarPanel::Filesystem),
             (Icon::Diamond, SidebarPanel::Symbols),
             (Icon::Plug, SidebarPanel::Plugins),
@@ -1555,6 +1953,7 @@ impl KateCraftApp {
         ui.painter().rect_filled(header, CornerRadius::ZERO, self.pal.chrome());
         let title = match self.panel {
             SidebarPanel::Documents => "Documents",
+            SidebarPanel::Search => "Search",
             SidebarPanel::Filesystem => "Filesystem",
             SidebarPanel::Symbols => "Symbols",
             SidebarPanel::Plugins => "Plugins",
@@ -1611,6 +2010,215 @@ impl KateCraftApp {
                         }
                         y += 23.0;
                     }
+                }
+                SidebarPanel::Search => {
+                    let now = ctx.input(|i| i.time);
+                    let mut q = self.fsearch.query.clone();
+                    let field = Rect::from_min_size(
+                        Pos2::new(body.left(), body.top() + 2.0),
+                        Vec2::new((body.width() - 58.0).max(70.0), 24.0),
+                    );
+                    ui.painter().rect_filled(field, CornerRadius::same(3), self.pal.field_bg());
+                    ui.painter().rect_stroke(
+                        field,
+                        CornerRadius::same(3),
+                        Stroke::new(1.0, self.pal.border()),
+                        StrokeKind::Inside,
+                    );
+                    let resp = ui.put(
+                        field.shrink2(Vec2::new(6.0, 2.0)),
+                        egui::TextEdit::singleline(&mut q)
+                            .frame(egui::Frame::NONE)
+                            .hint_text("Find in files")
+                            .id(Id::new("fs-query"))
+                            .font(FontId::new(12.0, egui::FontFamily::Proportional)),
+                    );
+                    if q != self.fsearch.query {
+                        self.fsearch.query = q;
+                    }
+                    if self.fsearch.focus {
+                        resp.request_focus();
+                        self.fsearch.focus = false;
+                    }
+                    let br = Rect::from_min_size(
+                        Pos2::new(field.right() + 4.0, body.top() + 2.0),
+                        Vec2::new((body.right() - field.right() - 4.0).max(40.0), 24.0),
+                    );
+                    let bresp = ui.interact(br, Id::new("fs-run"), Sense::click());
+                    ui.painter().rect_filled(
+                        br,
+                        CornerRadius::same(3),
+                        if bresp.hovered() {
+                            theme::ACCENT.gamma_multiply(0.82)
+                        } else {
+                            theme::ACCENT
+                        },
+                    );
+                    ui.painter().text(
+                        br.center(),
+                        Align2::CENTER_CENTER,
+                        "Find",
+                        FontId::new(12.0, egui::FontFamily::Proportional),
+                        Color32::WHITE,
+                    );
+                    let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if bresp.clicked() || enter {
+                        self.run_file_search(now);
+                    }
+
+                    // Match case toggle.
+                    let cy = body.top() + 38.0;
+                    let cb = Rect::from_center_size(Pos2::new(body.left() + 10.0, cy), Vec2::splat(13.0));
+                    let cresp = ui
+                        .interact(cb, Id::new("fs-case"), Sense::click())
+                        .on_hover_text("Match case");
+                    ui.painter().rect_stroke(
+                        cb,
+                        CornerRadius::same(2),
+                        Stroke::new(1.0, self.pal.border()),
+                        StrokeKind::Inside,
+                    );
+                    if self.fsearch.case {
+                        paint_icon(ui.painter(), Icon::Check, cb.shrink(2.0), theme::ACCENT);
+                    }
+                    ui.painter().text(
+                        Pos2::new(body.left() + 21.0, cy),
+                        Align2::LEFT_CENTER,
+                        "Match case",
+                        FontId::new(11.5, egui::FontFamily::Proportional),
+                        self.pal.text_main(),
+                    );
+                    if cresp.clicked() {
+                        self.fsearch.case = !self.fsearch.case;
+                    }
+
+                    let scope_name = self
+                        .fsearch
+                        .scope
+                        .as_ref()
+                        .and_then(|p| p.file_name())
+                        .and_then(|n| n.to_str())
+                        .map(|s| s.to_string())
+                        .or_else(|| {
+                            self.fs_root
+                                .as_ref()
+                                .and_then(|p| p.file_name())
+                                .and_then(|n| n.to_str())
+                                .map(|s| s.to_string())
+                        })
+                        .unwrap_or_else(|| "folder".to_string());
+                    let mut summary = if self.fsearch.pending {
+                        format!("Searching {scope_name}…")
+                    } else if !self.fsearch.ran {
+                        "Type a word, then press Enter".to_string()
+                    } else if self.fsearch.for_query != self.fsearch.query.trim() {
+                        "Press Enter to search".to_string()
+                    } else if self.fsearch.total == 0 {
+                        format!("No matches in {scope_name}")
+                    } else if self.fsearch.files == 1 {
+                        format!("{} matches in 1 file", self.fsearch.total)
+                    } else {
+                        format!("{} matches in {} files", self.fsearch.total, self.fsearch.files)
+                    };
+                    if self.fsearch.truncated {
+                        summary.push_str(" · first 500");
+                    }
+                    ui.painter().text(
+                        Pos2::new(body.left() + 2.0, body.top() + 58.0),
+                        Align2::LEFT_CENTER,
+                        summary,
+                        FontId::new(11.0, egui::FontFamily::Proportional),
+                        self.pal.text_dim(),
+                    );
+
+                    let list = Rect::from_min_max(
+                        Pos2::new(body.left(), body.top() + 72.0),
+                        Pos2::new(body.right(), body.bottom()),
+                    );
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(list), |ui| {
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .id_salt("fs-hits")
+                            .show(ui, |ui| {
+                                ui.spacing_mut().item_spacing.y = 0.0;
+                                let mut last_file: Option<PathBuf> = None;
+                                for (i, hit) in self.fsearch.hits.iter().enumerate() {
+                                    if last_file.as_deref() != Some(hit.path.as_path()) {
+                                        let (rect, _) = ui.allocate_exact_size(
+                                            Vec2::new(ui.available_width(), 21.0),
+                                            Sense::hover(),
+                                        );
+                                        let name = hit
+                                            .path
+                                            .file_name()
+                                            .and_then(|n| n.to_str())
+                                            .unwrap_or("?")
+                                            .to_string();
+                                        let mut count = 1usize;
+                                        for other in self.fsearch.hits.iter().skip(i + 1) {
+                                            if other.path == hit.path {
+                                                count += 1;
+                                            } else {
+                                                break;
+                                            }
+                                        }
+                                        ui.painter().text(
+                                            Pos2::new(rect.left() + 2.0, rect.center().y),
+                                            Align2::LEFT_CENTER,
+                                            name,
+                                            FontId::new(11.5, egui::FontFamily::Name("bold".into())),
+                                            self.pal.text_main(),
+                                        );
+                                        ui.painter().text(
+                                            Pos2::new(rect.right() - 4.0, rect.center().y),
+                                            Align2::RIGHT_CENTER,
+                                            count.to_string(),
+                                            FontId::new(10.5, egui::FontFamily::Monospace),
+                                            self.pal.text_disabled(),
+                                        );
+                                        last_file = Some(hit.path.clone());
+                                    }
+                                    let (rect, hresp) = ui.allocate_exact_size(
+                                        Vec2::new(ui.available_width(), 17.0),
+                                        Sense::click(),
+                                    );
+                                    if hresp.hovered() {
+                                        ui.painter().rect_filled(
+                                            rect,
+                                            CornerRadius::same(2),
+                                            self.pal.chrome_hover(),
+                                        );
+                                    }
+                                    ui.painter().text(
+                                        Pos2::new(rect.left() + 26.0, rect.center().y),
+                                        Align2::RIGHT_CENTER,
+                                        (hit.line + 1).to_string(),
+                                        FontId::new(10.5, egui::FontFamily::Monospace),
+                                        self.pal.text_disabled(),
+                                    );
+                                    let room = (((rect.width() - 36.0) / 6.1).floor() as usize).max(8);
+                                    let text: String = hit.text.chars().take(room).collect();
+                                    ui.painter().text(
+                                        Pos2::new(rect.left() + 32.0, rect.center().y),
+                                        Align2::LEFT_CENTER,
+                                        text,
+                                        FontId::new(11.0, egui::FontFamily::Monospace),
+                                        self.pal.text_main(),
+                                    );
+                                    if hresp.clicked() {
+                                        acts.push(Act::OpenHit(i));
+                                    }
+                                }
+                                if self.fsearch.ran && self.fsearch.hits.is_empty() {
+                                    ui.add_space(6.0);
+                                    ui.label(
+                                        egui::RichText::new("Nothing found.")
+                                            .size(11.5)
+                                            .color(self.pal.text_dim()),
+                                    );
+                                }
+                            });
+                    });
                 }
                 SidebarPanel::Filesystem => {
                     let root = self.fs_root.clone();
@@ -1866,16 +2474,39 @@ impl KateCraftApp {
             x += w + 4.0;
         }
 
-        // right side tokens
-        let d = self.doc();
-        let line = d.line_of(d.cursor) + 1;
-        let col = d.col_of(d.cursor) + 1;
+        // right side tokens; the word count is cached until the text changes
+        let (line, col, lang, version, sel_words) = {
+            let d = self.doc();
+            (
+                d.line_of(d.cursor) + 1,
+                d.col_of(d.cursor) + 1,
+                d.lang.name().to_string(),
+                d.version,
+                d.selection()
+                    .filter(|(a, b)| b > a)
+                    .map(|(a, b)| d.text[a..b].split_whitespace().count()),
+            )
+        };
+        let text_len = self.doc().text.len();
+        if self.count_cache.0 != self.active
+            || self.count_cache.1 != version
+            || self.count_cache.3 != text_len
+        {
+            let words = self.doc().text.split_whitespace().count();
+            self.count_cache = (self.active, version, words, text_len);
+        }
+        let words = self.count_cache.2;
+        let word_tok = match sel_words {
+            Some(n) if n > 0 => format!("{n} of {words} words"),
+            _ => format!("{words} words"),
+        };
         let tokens = [
             format!("{line}:{col}"),
+            word_tok,
             "INSERT".to_string(),
             format!("Soft Tabs: {}", self.ed.tab_width),
             "UTF-8".to_string(),
-            d.lang.name().to_string(),
+            lang,
         ];
         let font = FontId::new(12.0, egui::FontFamily::Proportional);
         let mut widths = vec![];
@@ -1898,7 +2529,7 @@ impl KateCraftApp {
 
         // clickable encoding / syntax chips
         let lang_rect = Rect::from_min_max(
-            Pos2::new(rect.right() - 12.0 - widths[4] - 4.0, rect.top() + 2.0),
+            Pos2::new(rect.right() - 12.0 - widths[tokens.len() - 1] - 4.0, rect.top() + 2.0),
             Pos2::new(rect.right() - 10.0, rect.bottom() - 2.0),
         );
         let lresp = ui.interact(lang_rect, Id::new("status-lang"), Sense::click());
@@ -2147,8 +2778,118 @@ impl KateCraftApp {
         let mut new_dialog: Option<Dialog> = None;
         let mut confirmed: Option<Act2> = None;
         let pal = self.pal;
+        // The update window's state, read before the dialog is borrowed: the release on
+        // offer, whether the download is running, and the last failure.
+        let was_update = matches!(self.dialog, Some(Dialog::Update));
+        let upd_offer = self.update.release.clone();
+        let upd_installing = self.update.installing;
+        let upd_error = self.update.error.clone();
+        let mut upd_install = false;
+        let mut upd_later = false;
 
         match self.dialog.as_mut().unwrap() {
+            // Added feature: *Check for updates…*. Three faces and one window: the offer
+            // with the release notes, the wait while the download is checked and put in
+            // place, and the failure with its reason. It only ever appears after the menu
+            // row was picked — the app looks for nothing by itself.
+            Dialog::Update => {
+                dialog_shell(ctx, "Check for updates", 480.0, pal, &mut close, |ui, pal, close| {
+                    if upd_installing {
+                        let version = upd_offer
+                            .as_ref()
+                            .map(|r| r.version.clone())
+                            .unwrap_or_default();
+                        ui.label(
+                            egui::RichText::new(format!("Installing KateCraft {version}…"))
+                                .size(16.0)
+                                .strong()
+                                .color(pal.text_main()),
+                        );
+                        ui.add_space(6.0);
+                        ui.label(
+                            egui::RichText::new(
+                                "The download is checked against the release's sha256 before \
+                                 anything is replaced. The window restarts on the new build \
+                                 once it is in place; the open documents are saved first.",
+                            )
+                            .size(12.0)
+                            .color(pal.text_dim()),
+                        );
+                    } else if let Some(rel) = upd_offer.as_ref() {
+                        ui.label(
+                            egui::RichText::new(format!("KateCraft {} is available", rel.version))
+                                .size(16.0)
+                                .strong()
+                                .color(pal.text_main()),
+                        );
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "You have {}. The newer build is {} for {}.",
+                                crate::update::VERSION,
+                                rel.version,
+                                std::env::consts::ARCH
+                            ))
+                            .size(12.0)
+                            .color(pal.text_main()),
+                        );
+                        ui.add_space(8.0);
+                        if !rel.notes.trim().is_empty() {
+                            egui::ScrollArea::vertical()
+                                .max_height(230.0)
+                                .auto_shrink([false, true])
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new(rel.notes.trim())
+                                            .size(11.5)
+                                            .color(pal.text_dim()),
+                                    );
+                                });
+                            ui.add_space(8.0);
+                        }
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "The file is {}, checked against the release's sha256 before \
+                                 this one is replaced.",
+                                rel.tarball
+                            ))
+                            .size(10.5)
+                            .color(pal.text_dim()),
+                        );
+                        ui.add_space(18.0);
+                        button_row(ui, |ui| {
+                            if dialog_button(ui, pal, "Later", false) {
+                                upd_later = true;
+                                *close = true;
+                            }
+                            if dialog_button(ui, pal, "Install and restart", true) {
+                                upd_install = true;
+                            }
+                        });
+                    } else if let Some(err) = upd_error.as_ref() {
+                        ui.label(
+                            egui::RichText::new("Could not check for updates")
+                                .size(16.0)
+                                .strong()
+                                .color(pal.text_main()),
+                        );
+                        ui.add_space(6.0);
+                        ui.label(egui::RichText::new(err).size(12.0).color(pal.text_main()));
+                        ui.add_space(18.0);
+                        button_row(ui, |ui| {
+                            if dialog_button(ui, pal, "Close", true) {
+                                *close = true;
+                            }
+                        });
+                    } else {
+                        ui.label(
+                            egui::RichText::new("Checking GitHub for a newer release…")
+                                .size(14.0)
+                                .color(pal.text_main()),
+                        );
+                    }
+                });
+            }
             Dialog::About => {
                 dialog_shell(ctx, "About", 410.0, pal, &mut close, |ui, pal, close| {
                     ui.horizontal(|ui| {
@@ -2204,7 +2945,10 @@ impl KateCraftApp {
                         ("Close document", "Ctrl+W"),
                         ("Quit", "Ctrl+Q"),
                         ("Find", "Ctrl+F"),
+                        ("Find in files", "Ctrl+Shift+F"),
                         ("Replace", "Ctrl+R"),
+                        ("Toggle bookmark", "Ctrl+B"),
+                        ("Next / previous bookmark", "F2 / Shift+F2"),
                         ("Go to line", "Ctrl+G"),
                         ("Undo / Redo", "Ctrl+Z / Ctrl+Shift+Z"),
                         ("Select all", "Ctrl+A"),
@@ -2286,6 +3030,12 @@ impl KateCraftApp {
                             });
                             ui.end_row();
                         });
+                    ui.add_space(12.0);
+                    section_label(ui, pal, "Sessions");
+                    let mut reopen = self.reopen;
+                    if check_row(ui, pal, "Reopen last documents at start", &mut reopen) {
+                        self.reopen = reopen;
+                    }
                     ui.add_space(12.0);
                     ui.label(
                         egui::RichText::new(
@@ -2514,8 +3264,31 @@ impl KateCraftApp {
                     self.quitting = true;
                     ctx.send_viewport_cmd(ViewportCommand::Close);
                 }
+                Act2::Restart => {
+                    // The update is on disk and the documents are the person's own: start the
+                    // new build and close this window. The path comes from the install, because
+                    // after the rename `current_exe()` answers "… (deleted)".
+                    if let Some(exe) = self.restart_exe.take() {
+                        match crate::update::restart(&exe) {
+                            Ok(()) => {
+                                self.quitting = true;
+                                ctx.send_viewport_cmd(ViewportCommand::Close);
+                            }
+                            Err(e) => {
+                                let now = ctx.input(|i| i.time);
+                                self.toast(format!("Updated, but the restart failed: {e}"), now);
+                            }
+                        }
+                    }
+                }
             }
             close = true;
+        }
+        if upd_install {
+            self.update.start_install();
+        }
+        if upd_later || (close && was_update && !self.update.busy()) {
+            self.update.dismiss();
         }
         if let Some(d) = new_dialog {
             if let Dialog::Message(t, n) = &d {
@@ -2547,6 +3320,8 @@ impl KateCraftApp {
                 egui::Key::F,
                 egui::Key::R,
                 egui::Key::G,
+                egui::Key::B,
+                egui::Key::F2,
                 egui::Key::PageDown,
                 egui::Key::PageUp,
                 egui::Key::Plus,
@@ -2569,6 +3344,18 @@ impl KateCraftApp {
             if keys.contains(&egui::Key::Escape) && self.find.open {
                 self.apply(Act::CloseFind, ctx);
             }
+            // Bookmarks step with F2 / Shift+F2, unless a text field is being
+            // typed into.
+            if keys.contains(&egui::Key::F2) && ctx.memory(|m| m.focused()).is_none() {
+                self.apply(
+                    if mods.shift {
+                        Act::PrevBookmark
+                    } else {
+                        Act::NextBookmark
+                    },
+                    ctx,
+                );
+            }
             return;
         }
         for k in keys {
@@ -2578,8 +3365,9 @@ impl KateCraftApp {
                 egui::Key::S => Some(if mods.shift { Act::SaveAs } else { Act::Save }),
                 egui::Key::W => Some(Act::CloseDoc(self.active)),
                 egui::Key::Q => Some(Act::Quit),
-                egui::Key::F => Some(Act::Find),
+                egui::Key::F => Some(if mods.shift { Act::FindInFiles } else { Act::Find }),
                 egui::Key::R => Some(Act::Replace),
+                egui::Key::B => Some(Act::ToggleBookmark),
                 egui::Key::G => Some(Act::GoToLine),
                 egui::Key::PageDown => Some(Act::NextTab),
                 egui::Key::PageUp => Some(Act::PrevTab),
@@ -2740,28 +3528,282 @@ impl KateCraftApp {
 
 /// Where the open-file list is kept between runs: KateCraft's own folder, so it
 /// never collides with the original editor's configuration.
-fn session_path() -> Option<PathBuf> {
+fn data_path(name: &str) -> Option<PathBuf> {
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))?;
-    Some(base.join("katecraft").join("session.txt"))
+    Some(base.join("katecraft").join(name))
 }
 
-/// Read the system clipboard without pulling in a GUI clipboard dependency.
-fn arboard_read() -> Result<String, ()> {
-    let mut cmds: [(&str, &[&str]); 3] = [
+fn session_path() -> Option<PathBuf> {
+    data_path("session.txt")
+}
+
+/// The documents the last session had open, in tab order, and the one that
+/// was in front. A missing or unreadable file simply means no session.
+fn load_session() -> (Vec<PathBuf>, Option<PathBuf>) {
+    match session_path().and_then(|p| std::fs::read_to_string(p).ok()) {
+        Some(body) => parse_session(&body),
+        None => (Vec::new(), None),
+    }
+}
+
+fn save_session(list: &[PathBuf], active: Option<&Path>) {
+    let Some(path) = session_path() else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, session_body(list, active));
+}
+
+/// Tab order first, then the document that was in front (`@active=`).
+fn parse_session(body: &str) -> (Vec<PathBuf>, Option<PathBuf>) {
+    let mut out: Vec<PathBuf> = Vec::new();
+    let mut active: Option<PathBuf> = None;
+    for raw in body.lines() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("@active=") {
+            active = Some(PathBuf::from(rest));
+            continue;
+        }
+        let p = PathBuf::from(line);
+        if !out.contains(&p) {
+            out.push(p);
+        }
+    }
+    out.truncate(12);
+    (out, active)
+}
+
+fn session_body(list: &[PathBuf], active: Option<&Path>) -> String {
+    let mut body = String::new();
+    if let Some(a) = active {
+        body.push_str(&format!("@active={}\n", a.to_string_lossy()));
+    }
+    for p in list {
+        body.push_str(&p.to_string_lossy());
+        body.push('\n');
+    }
+    body
+}
+
+fn recent_path() -> Option<PathBuf> {
+    data_path("recent.txt")
+}
+
+fn load_recent() -> Vec<PathBuf> {
+    let body = recent_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_default();
+    body.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(PathBuf::from)
+        .filter(|p| p.exists())
+        .take(10)
+        .collect()
+}
+
+fn save_recent(list: &[PathBuf]) {
+    let Some(path) = recent_path() else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let body = list
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let _ = std::fs::write(path, body);
+}
+
+struct TreeHits {
+    hits: Vec<FileHit>,
+    total: usize,
+    files: usize,
+    scanned: usize,
+    truncated: bool,
+}
+
+/// Count the matches in one line (up to a sane limit) and give the byte
+/// offset of the first one.
+fn match_line(line: &str, query: &str, case: bool) -> (Option<usize>, usize) {
+    let mut first = None;
+    let mut n = 0usize;
+    if case {
+        for (i, _) in line.match_indices(query) {
+            if first.is_none() {
+                first = Some(i);
+            }
+            n += 1;
+            if n >= 200 {
+                break;
+            }
+        }
+    } else if query.is_ascii() && line.is_ascii() {
+        let lb = line.as_bytes();
+        let qb = query.as_bytes();
+        let mut i = 0usize;
+        while i + qb.len() <= lb.len() {
+            if lb[i..i + qb.len()].eq_ignore_ascii_case(qb) {
+                if first.is_none() {
+                    first = Some(i);
+                }
+                n += 1;
+                if n >= 200 {
+                    break;
+                }
+                i += qb.len().max(1);
+            } else {
+                i += 1;
+            }
+        }
+    } else {
+        // Non-ASCII text: lowercasing can change byte lengths, so only use the
+        // lowered offsets when the line kept its length.
+        let low = line.to_lowercase();
+        let ql = query.to_lowercase();
+        if low.len() == line.len() {
+            for (i, _) in low.match_indices(&ql) {
+                if first.is_none() {
+                    first = Some(i);
+                }
+                n += 1;
+                if n >= 200 {
+                    break;
+                }
+            }
+        }
+    }
+    (first, n)
+}
+
+/// Walk a folder and collect the lines that contain `query`, skipping hidden
+/// folders, build output and very large or binary files.
+fn search_tree(root: &Path, query: &str, case: bool) -> TreeHits {
+    let mut out = TreeHits {
+        hits: Vec::new(),
+        total: 0,
+        files: 0,
+        scanned: 0,
+        truncated: false,
+    };
+    let skip = [
+        ".git", ".hg", ".svn", "target", "node_modules", "build", "dist", ".cache",
+        "__pycache__", ".venv", "venv", "env", ".idea", ".vscode", "Pods",
+    ];
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        if out.hits.len() >= 500 || out.scanned >= 4000 {
+            out.truncated = true;
+            break;
+        }
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut entries: Vec<std::fs::DirEntry> = rd.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            if out.hits.len() >= 500 || out.scanned >= 4000 {
+                out.truncated = true;
+                break;
+            }
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            let Ok(ft) = e.file_type() else { continue };
+            if ft.is_dir() {
+                if depth < 14 && !skip.contains(&name.as_str()) {
+                    stack.push((e.path(), depth + 1));
+                }
+                continue;
+            }
+            if !ft.is_file() {
+                continue;
+            }
+            if let Ok(meta) = e.metadata() {
+                if meta.len() > 2_000_000 {
+                    continue;
+                }
+            }
+            let path = e.path();
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            if text.contains('\0') {
+                continue;
+            }
+            out.scanned += 1;
+            let mut counted_file = false;
+            for (ln, line) in text.split('\n').enumerate() {
+                if out.hits.len() >= 500 {
+                    out.truncated = true;
+                    break;
+                }
+                if line.len() > 4000 {
+                    continue;
+                }
+                let (first, n) = match_line(line, query, case);
+                let Some(byte) = first else { continue };
+                if !counted_file {
+                    out.files += 1;
+                    counted_file = true;
+                }
+                out.total += n;
+                let col = line[..byte].chars().count();
+                let mut preview: String = line.trim().chars().take(160).collect();
+                if line.trim().chars().count() > 160 {
+                    preview.push('…');
+                }
+                out.hits.push(FileHit {
+                    path: path.clone(),
+                    line: ln,
+                    col,
+                    text: preview,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Read the system clipboard for the Edit menu and the right-click menu.
+///
+/// eframe's own clipboard integration (enabled through the `clipboard` feature)
+/// handles Ctrl+C/X/V; this is the explicit "Paste" command, where no paste
+/// event is delivered. Small helpers are tried in turn so Wayland sessions
+/// (`wl-paste`) and X11 sessions (`xclip`, `xsel`) both work.
+fn read_clipboard_text() -> Option<String> {
+    let mut cmds: [(&str, &[&str]); 4] = [
+        ("wl-paste", &["--no-newline", "--type", "text"]),
         ("wl-paste", &["--no-newline"]),
         ("xclip", &["-selection", "clipboard", "-o"]),
         ("xsel", &["--clipboard", "--output"]),
     ];
     for (cmd, args) in cmds.iter_mut() {
-        if let Ok(out) = std::process::Command::new(cmd).args(args.iter()).output() {
-            if out.status.success() {
-                return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
-            }
+        let Ok(out) = std::process::Command::new(cmd).args(args.iter()).output() else {
+            continue;
+        };
+        if !out.status.success() {
+            continue;
+        }
+        let text = String::from_utf8_lossy(&out.stdout)
+            .replace("\r\n", "\n")
+            .replace('\r', "\n");
+        let text = text.replace('\0', "");
+        if !text.is_empty() {
+            return Some(text);
         }
     }
-    Err(())
+    None
 }
 
 pub fn save_png(path: &Path, image: &egui::ColorImage) {
@@ -3098,6 +4140,42 @@ fn frame_fill(color: Color32, margin: Margin) -> egui::Frame {
         .stroke(Stroke::NONE)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recent_files_round_trip() {
+        let dir = std::env::temp_dir().join(format!("katecraft-recent-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("one.txt");
+        let b = dir.join("two.txt");
+        std::fs::write(&a, "one").unwrap();
+        std::fs::write(&b, "two").unwrap();
+        std::env::set_var("XDG_DATA_HOME", &dir);
+        save_recent(&[b.clone(), a.clone()]);
+        assert_eq!(load_recent(), vec![b.clone(), a.clone()]);
+        assert!(load_recent().len() == 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn session_file_keeps_order_and_front_document() {
+        let a = PathBuf::from("/tmp/one.txt");
+        let b = PathBuf::from("/tmp/two.txt");
+        let body = session_body(&[a.clone(), b.clone()], Some(&b));
+        let (paths, active) = parse_session(&body);
+        assert_eq!(paths, vec![a.clone(), b.clone()]);
+        assert_eq!(active, Some(b));
+
+        // Repeated or empty lines never produce duplicate tabs; a file with
+        // no front marker still opens its documents.
+        let (paths, active) = parse_session("/tmp/one.txt\n\n/tmp/one.txt\n/tmp/two.txt\n");
+        assert_eq!(paths, vec![a, PathBuf::from("/tmp/two.txt")]);
+        assert_eq!(active, None);
+    }
+}
+
 impl eframe::App for KateCraftApp {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         let c = self.pal.chrome();
@@ -3108,6 +4186,44 @@ impl eframe::App for KateCraftApp {
         let ctx_owned = root.ctx().clone();
         let ctx = &ctx_owned;
         self.frame += 1;
+        // Added feature: *Check for updates…* — the worker thread's answer lands here. The
+        // check and the download run off the UI thread, so the window keeps drawing while
+        // they do.
+        match self.update.poll() {
+            crate::update::Poll::Idle => {}
+            crate::update::Poll::Say(words) => {
+                let now = ctx.input(|i| i.time);
+                self.toast(words, now);
+            }
+            crate::update::Poll::Restart(exe) => {
+                // The new build is on disk. With unsaved work the restart asks first, the
+                // same way Quit does; otherwise it goes straight in.
+                self.restart_exe = Some(exe);
+                if self.docs.iter().any(|d| d.dirty) {
+                    self.dialog = Some(Dialog::Confirm(
+                        "Restart",
+                        "The update is installed. Some documents have unsaved changes — restart \
+                         into the new build anyway?"
+                            .into(),
+                        Act2::Restart,
+                    ));
+                } else {
+                    if let Some(exe) = self.restart_exe.take() {
+                        match crate::update::restart(&exe) {
+                            Ok(()) => {
+                                self.quitting = true;
+                                ctx.send_viewport_cmd(ViewportCommand::Close);
+                            }
+                            Err(e) => {
+                                self.restart_exe = Some(exe);
+                                let now = ctx.input(|i| i.time);
+                                self.toast(format!("Updated, but the restart failed: {e}"), now);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         // Files handed over by a later launch (from the file manager, or a
         // second click) land in this window, the way Kate takes them.
         if let Some(server) = self.single.as_mut() {
@@ -3141,6 +4257,10 @@ impl eframe::App for KateCraftApp {
         }
         self.screenshot_tick(ctx);
         self.shortcuts(ctx);
+        self.poll_search(ctx.input(|i| i.time));
+        if self.fsearch.pending {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
 
         if self.show_menu {
             egui::Panel::top("titlebar")
@@ -3218,7 +4338,8 @@ impl eframe::App for KateCraftApp {
             .frame(frame_fill(self.pal.editor_bg(), Margin::ZERO))
             .show(root, |ui| {
                 let any_focus = ctx.memory(|m| m.focused()).is_some();
-                let allow_keys = self.editor_focused && !any_focus;
+                let allow_keys =
+                    self.editor_focused && !any_focus && self.dialog.is_none();
                 let doc_idx = self.active.min(self.docs.len().saturating_sub(1));
                 let matches: Vec<(usize, usize)> = if self.find.query.is_empty() {
                     Vec::new()
@@ -3232,6 +4353,18 @@ impl eframe::App for KateCraftApp {
                     };
                     if out.changed {
                         self.refresh_matches();
+                    }
+                    if let Some(edit) = out.edit {
+                        let act = match edit {
+                            editor::EditAction::Cut => Act::Cut,
+                            editor::EditAction::Copy => Act::Copy,
+                            editor::EditAction::Paste => Act::Paste,
+                            editor::EditAction::SelectAll => Act::SelectAll,
+                        };
+                        self.apply(act, ctx);
+                        if matches!(edit, editor::EditAction::Cut | editor::EditAction::Paste) {
+                            self.refresh_matches();
+                        }
                     }
                     if out.clicked {
                         self.editor_focused = true;
@@ -3252,6 +4385,17 @@ impl eframe::App for KateCraftApp {
         self.active = self.active.min(self.docs.len() - 1);
 
         self.persist_prefs();
+
+        // The open tabs are written down whenever they change, so the next
+        // start can put the person back where they were. Picture mode and
+        // review views never write.
+        if self.prefs_writable {
+            let paths: Vec<PathBuf> = self.docs.iter().filter_map(|d| d.path.clone()).collect();
+            if paths != self.session_saved {
+                save_session(&paths, self.doc().path.as_deref());
+                self.session_saved = paths;
+            }
+        }
 
         if let Some((msg, t)) = &self.toast {
             let now = ctx.input(|i| i.time);
@@ -3284,6 +4428,15 @@ impl eframe::App for KateCraftApp {
                 );
                 ctx.request_repaint();
             }
+        }
+        // A finished check or download is only noticed on a frame, and the window otherwise
+        // sleeps until the next input: while a job is running, ask for the next frame so the
+        // reply is picked up within a tenth of a second. This sits at the end of the frame on
+        // purpose — the click that starts an install is handled by the dialog drawn after the
+        // poll, so a request made up there missed exactly that click and the window slept with
+        // the install finished and unread.
+        if self.update.busy() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(150));
         }
     }
 }

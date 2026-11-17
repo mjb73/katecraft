@@ -26,8 +26,9 @@ def main(argv):
         print(index, tab)
 
     # Shortcuts worth knowing:
-    #   Ctrl+F  find        Ctrl+R  replace
-    #   Ctrl+S  save        Ctrl+G  go to a line
+    #   Ctrl+F  find        Ctrl+Shift+F  find in files
+    #   Ctrl+R  replace     Ctrl+B        bookmark this line
+    #   Ctrl+S  save        Ctrl+G        go to a line
     width = max(len(tab) for tab in session.tabs)
     print("widest tab name:", width)
     return 0

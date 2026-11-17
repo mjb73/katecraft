@@ -505,6 +505,7 @@ pub(crate) struct Snapshot {
     text: String,
     cursor: usize,
     anchor: usize,
+    bookmarks: Vec<usize>,
 }
 
 pub struct Document {
@@ -525,6 +526,8 @@ pub struct Document {
     pub read_only: bool,
     pub spans: Vec<Vec<Span>>,
     pub spans_version: u64,
+    /// Bookmarks as byte offsets, kept in position while text is edited.
+    pub bookmarks: Vec<usize>,
 }
 
 impl Document {
@@ -567,6 +570,7 @@ impl Document {
             read_only: false,
             spans: Vec::new(),
             spans_version: u64::MAX,
+            bookmarks: Vec::new(),
         }
     }
 
@@ -599,12 +603,17 @@ impl Document {
             read_only: false,
             spans: Vec::new(),
             spans_version: u64::MAX,
+            bookmarks: Vec::new(),
         }
     }
 
     pub fn open(path: &Path) -> std::io::Result<Self> {
         let text = std::fs::read_to_string(path)?;
-        Ok(Self::from_text(Some(path.to_path_buf()), text))
+        // Remember the real, absolute location: a path typed as "notes.txt"
+        // still has to come back as the same file in the next session and in
+        // Open Recent, wherever the editor is started from.
+        let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        Ok(Self::from_text(Some(real), text))
     }
 
     pub fn save_to(&mut self, path: &Path) -> std::io::Result<()> {
@@ -683,6 +692,7 @@ impl Document {
             text: self.text.clone(),
             cursor: self.cursor,
             anchor: self.anchor,
+            bookmarks: self.bookmarks.clone(),
         }
     }
 
@@ -710,6 +720,11 @@ impl Document {
             self.text = snap.text;
             self.cursor = snap.cursor.min(self.text.len());
             self.anchor = snap.anchor.min(self.text.len());
+            self.bookmarks = snap
+                .bookmarks
+                .iter()
+                .map(|b| (*b).min(self.text.len()))
+                .collect();
             self.dirty = true;
             self.version += 1;
             self.last_edit = None;
@@ -726,6 +741,11 @@ impl Document {
             self.text = snap.text;
             self.cursor = snap.cursor.min(self.text.len());
             self.anchor = snap.anchor.min(self.text.len());
+            self.bookmarks = snap
+                .bookmarks
+                .iter()
+                .map(|b| (*b).min(self.text.len()))
+                .collect();
             self.dirty = true;
             self.version += 1;
             self.last_edit = None;
@@ -747,6 +767,11 @@ impl Document {
         }
         let at = self.cursor.min(self.text.len());
         self.text.insert_str(at, s);
+        for b in self.bookmarks.iter_mut() {
+            if *b >= at {
+                *b += s.len();
+            }
+        }
         self.cursor = at + s.len();
         self.anchor = self.cursor;
         self.dirty = true;
@@ -761,6 +786,17 @@ impl Document {
         let b = b.min(self.text.len());
         self.push_undo(false);
         self.text.replace_range(a..b, "");
+        let removed = b - a;
+        let mut marks = Vec::with_capacity(self.bookmarks.len());
+        for m in std::mem::take(&mut self.bookmarks) {
+            if m < a {
+                marks.push(m);
+            } else if m >= b {
+                marks.push(m - removed);
+            }
+            // A mark inside the deleted text goes away with it.
+        }
+        self.bookmarks = marks;
         self.cursor = a;
         self.anchor = a;
         self.dirty = true;
@@ -994,11 +1030,124 @@ impl Document {
         self.cursor = (le + 1).min(self.text.len());
     }
 
+    /// Add or remove a bookmark on the caret's line; returns true when added.
+    pub fn toggle_bookmark(&mut self) -> bool {
+        let line = self.line_of(self.cursor);
+        if let Some(i) = self
+            .bookmarks
+            .iter()
+            .position(|b| self.line_of((*b).min(self.text.len())) == line)
+        {
+            self.bookmarks.remove(i);
+            false
+        } else {
+            let at = self.line_start(line);
+            let pos = self.bookmarks.partition_point(|b| *b < at);
+            self.bookmarks.insert(pos, at);
+            true
+        }
+    }
+
+    /// Lines (0-based) carrying a bookmark, sorted and without duplicates.
+    pub fn bookmark_lines(&self) -> Vec<usize> {
+        let mut v: Vec<usize> = self
+            .bookmarks
+            .iter()
+            .map(|b| self.line_of((*b).min(self.text.len())))
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
+    /// Move the caret to the next (dir > 0) or previous bookmark, wrapping
+    /// around at either end. Returns false when the document has none.
+    pub fn goto_bookmark(&mut self, dir: isize) -> bool {
+        let lines = self.bookmark_lines();
+        if lines.is_empty() {
+            return false;
+        }
+        let cur = self.line_of(self.cursor);
+        let line = if dir >= 0 {
+            lines.iter().copied().find(|l| *l > cur).unwrap_or(lines[0])
+        } else {
+            lines
+                .iter()
+                .rev()
+                .copied()
+                .find(|l| *l < cur)
+                .unwrap_or(*lines.last().unwrap())
+        };
+        self.cursor = self.line_start(line);
+        self.anchor = self.cursor;
+        self.scroll_y = (line as f32 - 5.0).max(0.0);
+        self.wanted_col = None;
+        true
+    }
+
+    /// Remember which line and column each bookmark sits on, for edits that
+    /// rewrite the buffer wholesale (replace all, sort, trim, case changes).
+    fn marks_snapshot(&self) -> Vec<(usize, usize)> {
+        self.bookmarks
+            .iter()
+            .map(|b| {
+                let b = (*b).min(self.text.len());
+                let line = self.line_of(b);
+                let (ls, _) = self.line_range(line);
+                (line, b - ls)
+            })
+            .collect()
+    }
+
+    fn marks_restore(&mut self, marks: Vec<(usize, usize)>) {
+        self.bookmarks = marks
+            .into_iter()
+            .map(|(line, col)| {
+                let line = line.min(self.line_count().saturating_sub(1));
+                let (ls, le) = self.line_range(line);
+                ls + col.min(le.saturating_sub(ls))
+            })
+            .collect();
+    }
+
     pub fn selected_text(&self) -> String {
         match self.selection() {
             Some((a, b)) => self.text[a..b].to_string(),
             None => String::new(),
         }
+    }
+
+    /// The byte range that Copy/Cut acts on.
+    ///
+    /// With a selection this is exactly the selection. With no selection the
+    /// caret's whole line is used, including its trailing newline, which is
+    /// what Kate (and most KDE editors) do — otherwise Ctrl+C, Ctrl+X and the
+    /// Edit menu would quietly do nothing whenever nothing is selected.
+    pub fn copy_range(&self) -> (usize, usize) {
+        if let Some(r) = self.selection() {
+            return r;
+        }
+        let line = self.line_of(self.cursor);
+        let (ls, le) = self.line_range(line);
+        let end = if le < self.text.len() { le + 1 } else { le };
+        (ls, end)
+    }
+
+    /// Text that Copy/Cut acts on (see [`Self::copy_range`]).
+    pub fn copy_text(&self) -> String {
+        let (a, b) = self.copy_range();
+        self.text[a..b].to_string()
+    }
+
+    /// Cut the selection, or the caret's line when there is no selection.
+    /// Returns the removed text.
+    pub fn cut(&mut self) -> String {
+        let text = self.copy_text();
+        let (a, b) = self.copy_range();
+        if a < b {
+            self.delete_range(a, b);
+        }
+        text
     }
 
     /// Replace every match of `query` in the document (case-insensitive when
@@ -1008,6 +1157,7 @@ impl Document {
             return 0;
         }
         self.push_undo(false);
+        let marks = self.marks_snapshot();
         let hay = self.text.clone();
         let mut out = String::with_capacity(hay.len());
         let mut count = 0;
@@ -1034,6 +1184,7 @@ impl Document {
             }
         }
         self.text = out;
+        self.marks_restore(marks);
         self.dirty = true;
         self.version += 1;
         count
@@ -1041,6 +1192,7 @@ impl Document {
 
     pub fn trim_trailing_whitespace(&mut self) {
         self.push_undo(false);
+        let marks = self.marks_snapshot();
         let mut out = String::with_capacity(self.text.len());
         for (i, line) in self.text.split('\n').enumerate() {
             if i > 0 {
@@ -1049,6 +1201,7 @@ impl Document {
             out.push_str(line.trim_end());
         }
         self.text = out;
+        self.marks_restore(marks);
         self.cursor = self.cursor.min(self.text.len());
         self.anchor = self.anchor.min(self.text.len());
         self.dirty = true;
@@ -1065,7 +1218,9 @@ impl Document {
         lines.sort_by_key(|l| l.to_lowercase());
         let joined = lines.join("\n");
         self.push_undo(false);
+        let marks = self.marks_snapshot();
         self.text.replace_range(ls..le, &joined);
+        self.marks_restore(marks);
         self.dirty = true;
         self.version += 1;
     }
@@ -1078,7 +1233,9 @@ impl Document {
         let piece = self.text[a..b].to_string();
         let new = f(&piece);
         self.push_undo(false);
+        let marks = self.marks_snapshot();
         self.text.replace_range(a..b, &new);
+        self.marks_restore(marks);
         self.cursor = a + new.len();
         self.dirty = true;
         self.version += 1;
@@ -1089,6 +1246,33 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bookmarks_follow_edits() {
+        let mut d = Document::from_text(None, "one\ntwo\nthree\n".to_string());
+        d.cursor = 0;
+        assert!(d.toggle_bookmark());
+        d.cursor = d.text.len();
+        assert!(d.toggle_bookmark());
+        assert_eq!(d.bookmark_lines(), vec![0, 3]);
+        // A new first line pushes both marks down.
+        d.cursor = 0;
+        d.insert("zero\n");
+        assert_eq!(d.bookmark_lines(), vec![1, 4]);
+        // Steps forward with wrap-around.
+        d.cursor = 0;
+        assert!(d.goto_bookmark(1));
+        assert_eq!(d.line_of(d.cursor), 1);
+        assert!(d.goto_bookmark(1));
+        assert_eq!(d.line_of(d.cursor), 4);
+        assert!(d.goto_bookmark(1));
+        assert_eq!(d.line_of(d.cursor), 1);
+        // Deleting the tail keeps the mark that sat at the join point.
+        let (ls, _) = d.line_range(2);
+        let end = d.text.len();
+        d.delete_range(ls, end);
+        assert_eq!(d.bookmark_lines(), vec![1, 2]);
+    }
 
     #[test]
     fn typing_and_undo() {

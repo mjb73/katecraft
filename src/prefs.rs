@@ -19,6 +19,8 @@ pub struct Prefs {
     pub status: bool,
     pub sidebar: bool,
     pub panel: String,
+    /// Open the documents from the last time the window was used.
+    pub reopen: bool,
 }
 
 impl Default for Prefs {
@@ -35,11 +37,12 @@ impl Default for Prefs {
             status: true,
             sidebar: false,
             panel: "documents".to_string(),
+            reopen: true,
         }
     }
 }
 
-pub const PANELS: [&str; 4] = ["documents", "files", "symbols", "plugins"];
+pub const PANELS: [&str; 5] = ["documents", "search", "files", "symbols", "plugins"];
 
 /// `~/.config/katecraft/katecraft.conf`, honouring `XDG_CONFIG_HOME`.
 pub fn config_path() -> Option<PathBuf> {
@@ -132,6 +135,7 @@ impl Prefs {
                         self.panel = v;
                     }
                 }
+                ("sessions", "reopen") => self.reopen = truthy(value),
                 ("chrome", "lastfolder") => {
                     // Older files may carry this; it is no longer a setting.
                 }
@@ -160,7 +164,9 @@ impl Prefs {
         s.push_str(&format!("Breadcrumb={}\n", self.breadcrumb));
         s.push_str(&format!("StatusBar={}\n", self.status));
         s.push_str(&format!("Sidebar={}\n", self.sidebar));
-        s.push_str(&format!("SidebarPanel={}\n", self.panel));
+        s.push_str(&format!("SidebarPanel={}\n\n", self.panel));
+        s.push_str("[Sessions]\n");
+        s.push_str(&format!("Reopen={}\n", self.reopen));
         s
     }
 }
@@ -190,6 +196,7 @@ mod tests {
             status: true,
             sidebar: true,
             panel: "files".to_string(),
+            reopen: false,
         };
         let text = p.to_ini();
         let mut back = Prefs::default();

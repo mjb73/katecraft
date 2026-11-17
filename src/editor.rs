@@ -30,6 +30,19 @@ impl Default for EditorStyle {
 pub struct Outcome {
     pub changed: bool,
     pub clicked: bool,
+    /// A clipboard/selection command requested by the editor (keyboard
+    /// shortcut or right-click menu) that the app should apply.
+    pub edit: Option<EditAction>,
+}
+
+/// Clipboard and selection commands the editor can request but cannot carry
+/// out itself (the app owns the system clipboard and the menu actions).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum EditAction {
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
 }
 
 fn token_style(pal: Palette, t: Tok) -> (Color32, bool, bool) {
@@ -172,6 +185,40 @@ fn word_range(text: &str, pos: usize) -> (usize, usize) {
     (a, b)
 }
 
+/// Map a screen position inside the text area to a (line index, line start,
+/// byte offset in the line). Tabs are expanded before measuring, exactly like
+/// the painting pass, so clicking after a tab lands on the right character.
+#[allow(clippy::too_many_arguments)]
+fn hit_test(
+    ui: &egui::Ui,
+    doc: &Document,
+    st: &EditorStyle,
+    pal: Palette,
+    text_area: Rect,
+    row_h: f32,
+    total_lines: usize,
+    p: Pos2,
+) -> (usize, usize, usize) {
+    let line = (((p.y - text_area.top()) / row_h).floor() as isize
+        + doc.scroll_y.floor() as isize)
+        .clamp(0, total_lines as isize - 1) as usize;
+    let (ls, le) = doc.line_range(line);
+    let line_text = &doc.text[ls..le];
+    let disp_line = expand_tabs(line_text, st.tab_width);
+    let rel_x = (p.x - text_area.left() + doc.scroll_x).max(0.0);
+    let galley = line_job(
+        ui,
+        &disp_line,
+        &doc.spans.get(line).cloned().unwrap_or_default(),
+        st.font_size,
+        row_h,
+        pal,
+    );
+    let cc = galley.cursor_from_pos(Vec2::new(rel_x, row_h / 2.0));
+    let byte = src_byte(line_text, cc.index.0, st.tab_width);
+    (line, ls, byte)
+}
+
 pub fn show(
     ui: &mut egui::Ui,
     doc: &mut Document,
@@ -212,66 +259,79 @@ pub fn show(
     let ptr = ui.input(|i| i.pointer.interact_pos());
     let hovered = response.hovered() || response.dragged();
 
+    // Remember where the caret was before this frame's input so the view can
+    // tell "the user moved the caret" from "the wheel scrolled the view".
+    let cursor_before = doc.cursor;
+
+    let mut edit: Option<EditAction> = None;
+
+    // A left click places the caret (Shift extends the selection).
     if response.clicked() {
         if let Some(p) = ptr {
             if p.x >= text_area.left() - gutter_w {
-                let line = (((p.y - text_area.top()) / row_h).floor() as isize
-                    + doc.scroll_y.floor() as isize)
-                    .clamp(0, total_lines as isize - 1) as usize;
-                let (ls, le) = doc.line_range(line);
-                let line_text = &doc.text[ls..le];
-                let disp_line = expand_tabs(line_text, st.tab_width);
-                let rel_x = (p.x - text_area.left() + doc.scroll_x).max(0.0);
-                let galley = line_job(ui, &disp_line, &doc.spans.get(line).cloned().unwrap_or_default(), size, row_h, pal);
-                let cc = galley.cursor_from_pos(Vec2::new(rel_x, 1.0));
-                let byte_in_line = src_byte(line_text, cc.index.0, st.tab_width);
-                doc.move_cursor(ls + byte_in_line, ui.input(|i| i.modifiers.shift));
+                let (_line, ls, byte) = hit_test(ui, doc, st, pal, text_area, row_h, total_lines, p);
+                doc.move_cursor(ls + byte, ui.input(|i| i.modifiers.shift));
                 doc.wanted_col = None;
             }
         }
     }
-    if response.double_clicked() {
+    // A right click places the caret too, unless it lands inside the current
+    // selection: there it belongs to the selection's context menu.
+    if response.secondary_clicked() {
         if let Some(p) = ptr {
-            let line = (((p.y - text_area.top()) / row_h).floor() as isize
-                + doc.scroll_y.floor() as isize)
-                .clamp(0, total_lines as isize - 1) as usize;
-            let (ls, _) = doc.line_range(line);
-            let (a, b) = word_range(&doc.text, doc.cursor);
-            let _ = ls;
-            doc.anchor = a;
-            doc.cursor = b;
+            if p.x >= text_area.left() - gutter_w {
+                let (_line, ls, byte) = hit_test(ui, doc, st, pal, text_area, row_h, total_lines, p);
+                let at = ls + byte;
+                let inside = doc.selection().is_some_and(|(a, b)| at >= a && at <= b);
+                if !inside {
+                    doc.move_cursor(at, false);
+                    doc.wanted_col = None;
+                }
+            }
         }
+    }
+    // Double click selects the word (the first click already placed the caret);
+    // triple click selects the whole line.
+    if response.double_clicked() {
+        let at = doc.cursor;
+        let (a, b) = word_range(&doc.text, at);
+        doc.anchor = a;
+        doc.cursor = b;
+    }
+    if response.triple_clicked() {
+        doc.select_line();
     }
     if response.dragged_by(egui::PointerButton::Primary) {
         if let Some(p) = ptr {
-            let line = (((p.y - text_area.top()) / row_h).floor() as isize
-                + doc.scroll_y.floor() as isize)
-                .clamp(0, total_lines as isize - 1) as usize;
-            let (ls, le) = doc.line_range(line);
-            let line_text = &doc.text[ls..le];
-            let disp_line = expand_tabs(line_text, st.tab_width);
-            let rel_x = (p.x - text_area.left() + doc.scroll_x).max(0.0);
-            let galley = line_job(ui, &disp_line, &doc.spans.get(line).cloned().unwrap_or_default(), size, row_h, pal);
-            let cc = galley.cursor_from_pos(Vec2::new(rel_x, 1.0));
-            doc.cursor = (ls + src_byte(line_text, cc.index.0, st.tab_width)).min(doc.text.len());
+            let (_line, ls, byte) = hit_test(ui, doc, st, pal, text_area, row_h, total_lines, p);
+            doc.cursor = (ls + byte).min(doc.text.len());
             doc.wanted_col = None;
         }
     }
 
-    // wheel
+    // Wheel: scrolls the view. Consume the delta while over the editor so no
+    // outer container reacts to the same gesture.
     if hovered {
         let (scroll, hscroll) = ui.input(|i| (i.smooth_scroll_delta.y, i.smooth_scroll_delta.x));
         if scroll != 0.0 {
-            doc.scroll_y = (doc.scroll_y - scroll / row_h * 1.6).max(0.0);
+            doc.scroll_y = (doc.scroll_y - scroll / row_h * 1.2).max(0.0);
+            ui.ctx().input_mut(|i| i.smooth_scroll_delta.y = 0.0);
         }
         if hscroll != 0.0 {
             doc.scroll_x = (doc.scroll_x - hscroll).max(0.0);
+            ui.ctx().input_mut(|i| i.smooth_scroll_delta.x = 0.0);
         }
     }
 
     // keys
     if allow_keys {
         let events = ui.input(|i| i.raw.events.clone());
+        // egui-winit normally turns Ctrl+C/X/V into Copy/Cut/Paste events. If a
+        // platform only delivers the plain key, handle it too — but never both,
+        // or a paste would be inserted twice.
+        let has_clip_event = events
+            .iter()
+            .any(|e| matches!(e, egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_)));
         for ev in events {
             match ev {
                 egui::Event::Text(t) => {
@@ -281,25 +341,16 @@ pub fn show(
                     }
                 }
                 egui::Event::Paste(t) => {
-                    doc.insert(&t);
-                    changed = true;
-                }
-                egui::Event::Copy => {
-                    let s = doc.selected_text();
-                    if !s.is_empty() {
-                        ui.ctx().copy_text(s);
+                    // Normalise Windows/old-Mac line endings and NULs so a
+                    // paste from any application lands as clean text.
+                    let t = t.replace("\r\n", "\n").replace(['\r', '\0'], "");
+                    if !t.is_empty() {
+                        doc.insert(&t);
+                        changed = true;
                     }
                 }
-                egui::Event::Cut => {
-                    let s = doc.selected_text();
-                    if !s.is_empty() {
-                        ui.ctx().copy_text(s);
-                        if let Some((a, b)) = doc.selection() {
-                            doc.delete_range(a, b);
-                            changed = true;
-                        }
-                    }
-                }
+                egui::Event::Copy => edit = Some(EditAction::Copy),
+                egui::Event::Cut => edit = Some(EditAction::Cut),
                 egui::Event::Key {
                     key,
                     pressed: true,
@@ -389,6 +440,10 @@ pub fn show(
                             doc.move_line(visible_rows as isize - 2, shift);
                         }
                         egui::Key::A if ctrl => doc.select_all(),
+                        egui::Key::C if ctrl && !has_clip_event => edit = Some(EditAction::Copy),
+                        egui::Key::X if ctrl && !has_clip_event => edit = Some(EditAction::Cut),
+                        egui::Key::V if ctrl && !has_clip_event => edit = Some(EditAction::Paste),
+                        egui::Key::Insert if ctrl && !has_clip_event => edit = Some(EditAction::Copy),
                         egui::Key::Z if ctrl => {
                             if shift {
                                 doc.redo();
@@ -411,15 +466,42 @@ pub fn show(
 
     doc.ensure_spans();
 
-    // keep the caret on screen
+    // Keep the caret on screen after the caret itself moved (typing, clicking,
+    // arrow keys, undo, …). This must NOT run after a wheel scroll: doing so
+    // snapped the view straight back to a stationary caret, which made
+    // scrolling away from the cursor impossible in either direction.
     let caret_line = doc.line_of(doc.cursor);
-    if caret_line < doc.scroll_y as usize {
-        doc.scroll_y = caret_line as f32;
-    } else if caret_line >= doc.scroll_y as usize + visible_rows {
-        doc.scroll_y = (caret_line as f32 - visible_rows as f32 + 1.5).max(0.0);
+    if doc.cursor != cursor_before || changed {
+        if caret_line < doc.scroll_y as usize {
+            doc.scroll_y = caret_line as f32;
+        } else if caret_line >= doc.scroll_y as usize + visible_rows {
+            doc.scroll_y = (caret_line as f32 - visible_rows as f32 + 1.5).max(0.0);
+        }
     }
     let max_scroll = (total_lines as f32 - visible_rows as f32 + 1.0).max(0.0);
     doc.scroll_y = doc.scroll_y.clamp(0.0, max_scroll);
+
+    // Right-click menu for the usual editing commands.
+    response.context_menu(|ui| {
+        ui.set_min_width(190.0);
+        if ui.button("Cut\t\tCtrl+X").clicked() {
+            edit = Some(EditAction::Cut);
+            ui.close();
+        }
+        if ui.button("Copy\t\tCtrl+C").clicked() {
+            edit = Some(EditAction::Copy);
+            ui.close();
+        }
+        if ui.button("Paste\t\tCtrl+V").clicked() {
+            edit = Some(EditAction::Paste);
+            ui.close();
+        }
+        ui.separator();
+        if ui.button("Select All\t\tCtrl+A").clicked() {
+            edit = Some(EditAction::SelectAll);
+            ui.close();
+        }
+    });
 
     // -------------------------------------------------------- painting ---
     let painter = ui.painter_at(full);
@@ -438,8 +520,29 @@ pub fn show(
     let first = doc.scroll_y.floor() as usize;
     let last = (first + visible_rows + 1).min(total_lines);
 
-    let caret_pos = doc.cursor;
+    // Do not let horizontal scrolling run past the end of the widest visible
+    // line: otherwise the text slides off the left and the view becomes blank.
+    let widest = (first..last)
+        .map(|l| {
+            let (a, b) = doc.line_range(l);
+            doc.text[a..b].chars().count()
+        })
+        .max()
+        .unwrap_or(0) as f32;
+    let content_w = widest * char_w;
+    if content_w > text_area.width() {
+        doc.scroll_x = doc.scroll_x.min(content_w - text_area.width());
+    } else {
+        doc.scroll_x = 0.0;
+    }
+
+        let caret_pos = doc.cursor;
     let sel = doc.selection();
+    let bookmarked: std::collections::HashSet<usize> = doc
+        .bookmarks
+        .iter()
+        .map(|b| doc.line_of((*b).min(doc.text.len())))
+        .collect();
 
     for line in first..last {
         let (ls, le) = doc.line_range(line);
@@ -454,6 +557,18 @@ pub fn show(
                 Rect::from_min_max(Pos2::new(full.left(), y), Pos2::new(text_area.right(), y + row_h)),
                 CornerRadius::ZERO,
                 pal.cur_line(),
+            );
+        }
+
+        // A bookmark shows as a short accent bar at the left of its line.
+        if st.show_line_numbers && bookmarked.contains(&line) {
+            painter.rect_filled(
+                Rect::from_min_size(
+                    Pos2::new(full.left() + 4.0, y + 2.5),
+                    Vec2::new(3.0, row_h - 5.0),
+                ),
+                CornerRadius::same(1),
+                theme::ACCENT,
             );
         }
 
@@ -563,14 +678,6 @@ pub fn show(
     }
 
     // horizontal scrollbar
-    let widest = (first..last)
-        .map(|l| {
-            let (a, b) = doc.line_range(l);
-            doc.text[a..b].chars().count()
-        })
-        .max()
-        .unwrap_or(0) as f32;
-    let content_w = widest * char_w;
     if content_w > text_area.width() {
         let frac = (text_area.width() / content_w).clamp(0.1, 1.0);
         let track = Rect::from_min_max(
@@ -680,6 +787,7 @@ pub fn show(
     Outcome {
         changed,
         clicked: response.clicked(),
+        edit,
     }
 }
 

@@ -5,9 +5,19 @@ edition = "2021"
 description = "KateCraft — a text and code editor (Rust + egui)"
 
 [dependencies]
-eframe = { version = "0.37", default-features = false, features = ["glow", "wayland", "x11", "default_fonts"] }
+# `clipboard` wires egui's Copy/Cut/Paste events and ctx.copy_text() to the real
+# system clipboard (through arboard/smithay). Without it egui-winit silently
+# falls back to an in-app-only clipboard, so Ctrl+C/Ctrl+V never reached other
+# applications and pastes from other applications did nothing.
+eframe = { version = "0.37", default-features = false, features = ["glow", "wayland", "x11", "default_fonts", "clipboard"] }
 egui = "0.37"
 image = { version = "0.25", default-features = false, features = ["png"] }
+# Added feature: *Check for updates…* asks GitHub for the newest release (ureq: a small
+# blocking HTTPS client on rustls, run on a worker thread), reads its JSON, and checks
+# the downloaded tarball against the sha256 the release publishes.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+serde_json = "1"
+sha2 = "0.10"
 
 [profile.dev]
 opt-level = 1

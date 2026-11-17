@@ -10,6 +10,7 @@ mod editor;
 mod prefs;
 mod single;
 mod theme;
+mod update;
 
 use std::path::PathBuf;
 

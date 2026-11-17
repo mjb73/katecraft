@@ -19,27 +19,47 @@ From the project:
 `--screenshot` starts the app normally, draws about 120 frames, writes the
 window picture to the PNG path and exits.
 
-Set `KATECRAFT_UI` to `find`, `replace`, `sidebar`, `files`, `open`, `about`,
-`shortcuts`, `settings` or `dark` to open straight into that view (used when
-capturing pictures of the panels).
+Set `KATECRAFT_UI` to `find`, `replace`, `sidebar`, `search`, `searchhit`,
+`files`, `bookmarks`, `open`, `about`, `shortcuts`, `settings` or `dark` to
+open straight into that view (used when capturing pictures of the panels).
 
 ## What it does
 
+- Check for updates: *Help ▸ Check for updates…* asks GitHub for the newest KateCraft
+  release and, when there is one, offers it with its notes and an *Install and restart*
+  button. Nothing checks on its own; the download is verified against the release's sha256
+  before the running binary is replaced; and the window restarts on the new build with the
+  open documents saved (asking first if any have unsaved changes). `KATECRAFT_UPDATE_ENDPOINT`
+  points the check at another address, for testing.
 - Tabs: new, open, save, save as, reload, close, switch (middle-click closes)
+- Open Recent: the last ten documents, kept between sessions, in File ▸ Open Recent
 - One window: opening a file while the editor is open switches that window to
   the file (the way Kate does); a window left by an older build is replaced
   when a newer build is launched, so the file manager always shows the current
   editor
-- Editing: typing, undo/redo, cut/copy/paste, word and line movement,
-  soft-tab indentation, auto-indent on Enter, trailing-whitespace removal,
-  line sorting and case changes for a selection
+- Editing: typing, undo/redo, cut/copy/paste through the real system clipboard
+  (Ctrl+C/X/V, the Edit menu and a right-click menu in the text), word and line
+  movement, soft-tab indentation, auto-indent on Enter, trailing-whitespace
+  removal, line sorting and case changes for a selection; with nothing selected
+  Copy and Cut act on the caret's line, and pasted CRLF/CR text is normalised
+- Scrolling: the mouse wheel scrolls the view (Shift+wheel scrolls sideways)
+  without the view snapping back to the caret; the caret is only kept on screen
+  when it actually moves, and horizontal scrolling stops at the end of the text
+- Bookmarks: Ctrl+B marks the current line (an accent bar in the gutter),
+  F2 and Shift+F2 step between bookmarks with wrap-around, Edit ▸ Bookmarks
+  clears them; marks follow the text while it is edited and undone
 - Syntax colouring for Python, Rust, C/C++, JavaScript, JSON, TOML, Markdown,
   CSS, HTML and shell scripts, with line numbers, current-line band, minimap
   and a caret with selection
 - Find and replace: match count, next/previous, match case, replace one,
   replace all, highlights in the text
+- Find in files (Ctrl+Shift+F): searches every text file in the open folder,
+  skips hidden folders, build output and binary/large files, groups the hits
+  by file with line numbers and previews, and opens a file at the chosen line
+  with the word selected when a result is clicked
 - Chrome: menu bar, toolbar, tab bar, path breadcrumb, sidebar (documents,
-  file browser, symbols, plugin switches), status bar with line/column,
+  search, file browser, symbols, plugin switches), status bar with line/column,
+  live word count (or "n of total words" while a selection is active),
   insert mode, tab width, encoding and syntax; the title bar shows the
   document name with the app name and version (e.g. "KateCraft 0.1.0")
 - A frameless window that resizes from its own edge: dragging any side or
